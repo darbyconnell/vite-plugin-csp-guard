@@ -215,11 +215,6 @@ export type ShouldSkip = {
   "script-src-elem": boolean;
 };
 
-export type BundleContext = Record<
-  string,
-  { type: "chunk" | "asset"; hash: string }
->;
-
 export type CSPPluginContext = {
   options: MyPluginOptions;
   algorithm: HashAlgorithms;

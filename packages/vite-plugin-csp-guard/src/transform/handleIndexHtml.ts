@@ -1,12 +1,7 @@
 import * as cheerio from "cheerio";
-import {
-  BundleContext,
-  HashAlgorithms,
-  HashCollection,
-} from "../types";
+import { HashAlgorithms, HashCollection } from "../types";
 import { addHash, generateHash, warnMissingPolicy } from "../policy/core";
 import type { Rolldown } from "vite";
-import { extractAssetPath } from "../utils";
 import { CSPPolicy } from "csp-toolkit";
 
 /**
@@ -19,7 +14,6 @@ type handleIndexHtmlProps = {
   collection: HashCollection;
   policy: CSPPolicy;
   context: Rolldown.PluginContext | undefined;
-  bundleContext?: BundleContext;
 };
 
 /**
@@ -33,7 +27,6 @@ export function handleIndexHtml({
   algorithm,
   collection: HASH_COLLECTION,
   policy,
-  bundleContext,
 }: handleIndexHtmlProps) {
   const $ = cheerio.load(html);
 
@@ -49,17 +42,6 @@ export function handleIndexHtml({
           currentPolicy: policy["script-src"] ?? [],
           sourceType: "script-src",
         });
-
-        if (bundleContext) {
-          const fileName = extractAssetPath(scriptSrc);
-          if (fileName) {
-            const found = bundleContext[fileName];
-            if (found) {
-              //If we have found this, we then ned to amend the script to add an integrity attribute
-              $(el).attr("integrity", `${algorithm}-${found.hash}`);
-            }
-          }
-        }
       } catch (e) {
         console.error("Error hashing script src", e);
       }
