@@ -32,6 +32,7 @@ import {
   analyzeDynamicImports,
   processHtmlForSri,
   installSriRuntime,
+  withBasePathname,
 } from "./sri";
 import type { OutputBundle as RollupOutputBundle } from "rollup";
 
@@ -256,12 +257,16 @@ export default function vitePluginCSP(
 
           // 1. Build initial integrity map (for non-entry chunks and assets)
           let sriByPathname = buildIntegrityMappings(rollupBundle, algorithm, debug);
+          const base = resolvedConfig?.base ?? "/";
+          const baseNorm = base.endsWith("/") ? base.slice(0, -1) : base;
 
           // 2. Inject runtime into entry chunks FIRST - before we hash them for HTML
           //    (the integrity in HTML must match the final file content)
           const hashReplacements: { old: string; new: string }[] = [];
           if (sriConfig.runtimePatchDynamicLinks) {
-            const serializedMap = JSON.stringify(sriByPathname);
+            const serializedMap = JSON.stringify(
+              withBasePathname(sriByPathname, base),
+            );
             const cors = sriConfig.crossorigin
               ? JSON.stringify(sriConfig.crossorigin)
               : "undefined";
@@ -303,9 +308,6 @@ export default function vitePluginCSP(
           }
 
           const dynamicChunkFiles = analyzeDynamicImports(rollupBundle, debug);
-
-          const base = resolvedConfig?.base ?? "/";
-          const baseNorm = base.endsWith("/") ? base.slice(0, -1) : base;
 
           // 3. Process HTML assets: add SRI to elements, inject modulepreload links
           for (const [fileName, item] of Object.entries(bundle)) {
