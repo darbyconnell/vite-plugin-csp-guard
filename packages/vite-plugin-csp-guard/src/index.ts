@@ -127,6 +127,8 @@ export default function vitePluginCSP(
     enforce: "post",
     buildStart() {
       pluginContext = this;
+      // Watch-mode rebuilds reuse this instance; drop hashes from the previous build.
+      for (const hashes of Object.values(CORE_COLLECTION)) hashes.clear();
       viteVersion = this.meta.viteVersion;
       if (!viteVersion) {
         throw new Error(
