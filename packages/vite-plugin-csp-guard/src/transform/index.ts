@@ -16,19 +16,6 @@ import { handleCSPInsert, handleIndexHtml } from "./handleIndexHtml";
 import { generatePolicyString } from "../policy/createPolicy";
 import { cssFilter, jsFilter, preCssFilter, tsFilter } from "../utils";
 import { getCSS } from "../css/extraction";
-import { replaceVitePreload, replaceVueRouterPreload } from "./lazy";
-import * as fs from "fs";
-import * as path from "path";
-
-// Debug function to write code to a file
-const writeDebugFile = (code: string, fileName: string) => {
-  try {
-    fs.writeFileSync(path.resolve(process.cwd(), fileName), code);
-    console.log(`Debug file written: ${fileName}`);
-  } catch (error) {
-    console.error("Error writing debug file:", error);
-  }
-};
 
 export interface TransformHandlerProps {
   code: string;
@@ -126,7 +113,6 @@ export interface TransformIndexHtmlHandlerProps {
   isTransformationStatusEmpty: boolean;
   cspContext: CSPPluginContext;
   sri: boolean;
-  chunkHashes?: Map<string, string>;
   provisionalChunkHashes?: Map<string, string>;
   transformPolicy?: MyPluginOptions["transformPolicy"];
 }
@@ -140,12 +126,10 @@ export const transformIndexHtmlHandler = ({
   isTransformationStatusEmpty,
   cspContext,
   sri,
-  chunkHashes,
   provisionalChunkHashes,
   transformPolicy,
 }: TransformIndexHtmlHandlerProps) => {
-  const { algorithm, policy, collection, shouldSkip, debug, requirements } =
-    cspContext;
+  const { algorithm, policy, collection, shouldSkip } = cspContext;
 
   if (isTransformationStatusEmpty && server) {
     //Return early if there are no transformations and we are in dev mode
@@ -160,52 +144,8 @@ export const transformIndexHtmlHandler = ({
 
       if (currentFile) {
         if (currentFile.type === "chunk" && !shouldSkip["script-src-elem"]) {
-          // Use pre-calculated hash from renderChunk if available (build mode)
-          // This ensures we use the hash of the final minified code
-          let hash: string;
-
-          if (chunkHashes && chunkHashes.has(fileName)) {
-            // Use the hash calculated in renderChunk (final code after all transformations)
-            hash = chunkHashes.get(fileName)!;
-            if (debug) {
-              console.log(
-                `Using pre-calculated hash for ${fileName}: sha256-${hash.substring(0, 20)}...`,
-              );
-            }
-          } else {
-            // Fallback to old behavior (for dev mode or if renderChunk didn't run)
-            let code = currentFile.code;
-
-            if (code.includes("__VITE_PRELOAD__")) {
-              // Write original code to debug file
-              if (debug) {
-                writeDebugFile(
-                  code,
-                  `temp-original-${fileName.replace(/\//g, "-")}.js`,
-                );
-              }
-              if (requirements.strongLazyLoading) {
-                code = replaceVueRouterPreload(code, bundle);
-              } else {
-                code = replaceVitePreload(code);
-              }
-
-              if (debug) {
-                // Write transformed code to debug file
-                writeDebugFile(
-                  code,
-                  `temp-transformed-${fileName.replace(/\//g, "-")}.js`,
-                );
-              }
-            }
-            // Vite fills preload lists after this hook, so hash a copy only.
-            hash = generateHash(code, algorithm);
-            if (debug) {
-              console.log(
-                `Fallback hash calculation for ${fileName}: sha256-${hash.substring(0, 20)}...`,
-              );
-            }
-          }
+          // Provisional; replaced with the final code hash in generateBundle.
+          const hash = generateHash(currentFile.code, algorithm);
 
           provisionalChunkHashes?.set(fileName, hash);
 
@@ -215,7 +155,7 @@ export const transformIndexHtmlHandler = ({
               key: "script-src-elem",
               data: {
                 algorithm,
-                content: "", // We don't store content when using pre-calculated hashes
+                content: "",
               },
               collection: collection,
             });
