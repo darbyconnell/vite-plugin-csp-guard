@@ -62,7 +62,6 @@ export default function vitePluginCSP(
   const { outlierSupport = [], run = false, override: devOverride } = dev;
   const {
     sri = false,
-    outlierSupport: buildOutlierSupport = [],
     override: buildOverride,
   } = build;
 
@@ -108,7 +107,7 @@ export default function vitePluginCSP(
   // generateBundle hook swaps them for hashes of the final chunk code.
   const provisionalChunkHashes = new Map<string, string>();
 
-  const requirements = parseOutliers(outlierSupport, buildOutlierSupport);
+  const requirements = parseOutliers(outlierSupport);
   const shouldSkip = calculateSkip(policy);
 
   // Create the shared plugin context
