@@ -1,7 +1,11 @@
 import { describe, expect, test, vi } from "vitest";
 import { transformIndexHtmlHandler } from "../src/transform";
 import { calculateSkip, createNewCollection } from "../src/policy/core";
-import type { CSPPluginContext, TransformPolicyMeta } from "../src/types";
+import type {
+  CSPPluginContext,
+  MyPluginOptions,
+  TransformPolicyMeta,
+} from "../src/types";
 import type { IndexHtmlTransformContext } from "vite";
 
 const minimalHtml = `<!DOCTYPE html><html><head></head><body></body></html>`;
