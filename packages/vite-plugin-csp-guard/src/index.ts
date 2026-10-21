@@ -36,6 +36,7 @@ import {
   analyzeDynamicImports,
   processHtmlForSri,
   installSriRuntime,
+  collectReachableFiles,
 } from "./sri";
 import type { OutputBundle as RollupOutputBundle } from "rollup";
 
@@ -111,6 +112,11 @@ export default function vitePluginCSP(
   // generateBundle hook swaps them for hashes of the final chunk code.
   const provisionalChunkHashes = new Map<string, string>();
 
+  // CSS and assets of the chunk each module ended up in. Recorded in
+  // augmentChunkHash because Vite deletes CSS-only chunks before the post
+  // generateBundle hook runs.
+  const filesByModuleId = new Map<string, string[]>();
+
   const requirements = parseOutliers(outlierSupport, buildOutlierSupport);
   const shouldSkip = calculateSkip(policy);
 
@@ -142,6 +148,7 @@ export default function vitePluginCSP(
     buildStart() {
       pluginContext = this;
       provisionalChunkHashes.clear();
+      filesByModuleId.clear();
       viteVersion = this.meta.viteVersion;
       if (!viteVersion) {
         throw new Error(
@@ -258,6 +265,20 @@ export default function vitePluginCSP(
       },
     },
     augmentChunkHash(chunk) {
+      const { viteMetadata } = chunk;
+      if (
+        sriConfig.enabled &&
+        sriConfig.runtimePatchDynamicLinks &&
+        viteMetadata
+      ) {
+        const files = [
+          ...viteMetadata.importedCss,
+          ...viteMetadata.importedAssets,
+        ];
+        for (const moduleId of chunk.moduleIds) {
+          filesByModuleId.set(moduleId, files);
+        }
+      }
       if (isDevMode || !sriConfig.enabled) return;
       const salt: string[] = [];
       if (sriConfig.runtimePatchDynamicLinks && chunk.isEntry) {
@@ -288,19 +309,26 @@ export default function vitePluginCSP(
           // 1. Build initial integrity map (for non-entry chunks and assets)
           let sriByPathname = buildIntegrityMappings(rollupBundle, algorithm, debug);
 
-          // 2. Inject runtime into entry chunks FIRST - before we hash them for HTML
-          //    (the integrity in HTML must match the final file content)
+          // 2. Inject each entry's reachable-file map before hashing for HTML.
           if (sriConfig.runtimePatchDynamicLinks) {
-            const serializedMap = JSON.stringify(sriByPathname);
-            const injected =
-              `\n(${installSriRuntime.toString()})(${serializedMap},${sriRuntimeOptions});\n`;
+            const runtime = installSriRuntime.toString();
+            for (const [fileName, chunk] of Object.entries(bundle)) {
+              if (chunk.type !== "chunk" || !chunk.isEntry || !chunk.code) {
+                continue;
+              }
 
-            for (const [fileName, item] of Object.entries(bundle)) {
-              if (item.type !== "chunk") continue;
-              const chunk = item as { type: "chunk"; isEntry?: boolean; code?: string };
-              if (!chunk.isEntry || !chunk.code) continue;
-
-              chunk.code = injected + chunk.code;
+              const entryMap: Record<string, string> = {};
+              for (const file of collectReachableFiles(
+                bundle,
+                fileName,
+                (id) => this.getModuleInfo(id),
+                filesByModuleId,
+              )) {
+                const integrity = sriByPathname[`/${file}`];
+                if (integrity) entryMap[`/${file}`] = integrity;
+              }
+              const map = JSON.stringify(entryMap);
+              chunk.code = `\n(${runtime})(${map},${sriRuntimeOptions});\n${chunk.code}`;
               if (debug) {
                 console.log(`[SRI] Injected runtime into entry: ${fileName}`);
               }

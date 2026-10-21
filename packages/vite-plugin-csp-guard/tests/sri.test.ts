@@ -35,7 +35,7 @@ async function writeFixture(root: string) {
 async function buildFixture(
   root: string,
   options: MyPluginOptions | null,
-  entryFileNames?: string,
+  config: { entryFileNames?: string; input?: Record<string, string> } = {},
 ) {
   const result = await build({
     configFile: false,
@@ -46,8 +46,15 @@ async function buildFixture(
       write: false,
       minify: false,
       assetsDir: "assets",
-      ...(entryFileNames
-        ? { rolldownOptions: { output: { entryFileNames } } }
+      ...(config.entryFileNames || config.input
+        ? {
+            rolldownOptions: {
+              ...(config.entryFileNames
+                ? { output: { entryFileNames: config.entryFileNames } }
+                : {}),
+              ...(config.input ? { input: config.input } : {}),
+            },
+          }
         : {}),
     },
   });
@@ -57,11 +64,11 @@ async function buildFixture(
   const chunks = output.output.filter(
     (item): item is Rolldown.OutputChunk => item.type === "chunk",
   );
-  const html = output.output.find(
-    (item) => item.fileName === "index.html",
-  ) as Rolldown.OutputAsset;
+  const html = output.output.find((item) => item.fileName.endsWith(".html")) as
+    | Rolldown.OutputAsset
+    | undefined;
   const entry = chunks.find((chunk) => chunk.isEntry)!;
-  const htmlSource = String(html.source);
+  const htmlSource = String(html?.source ?? "");
   const $ = cheerio.load(htmlSource);
   const csp = $('meta[http-equiv="Content-Security-Policy"]').attr("content");
   const finalHashes = chunks.map(
@@ -84,6 +91,14 @@ function chunkNames(result: FixtureBuild): Record<string, string> {
   return Object.fromEntries(
     result.chunks.map((chunk) => [chunk.name, chunk.fileName]),
   );
+}
+
+function runtimeMapPair(fileName: string, integrity: string): string {
+  return `${JSON.stringify(`/${fileName}`)}:${JSON.stringify(integrity)}`;
+}
+
+function runtimeMapKey(fileName: string): string {
+  return `${JSON.stringify(`/${fileName}`)}:`;
 }
 
 function scriptElemHashes(csp: string | undefined): string[] {
@@ -168,13 +183,176 @@ describe("dynamic import preload lists", () => {
         policy: { "script-src": ["'strict-dynamic'"] },
         build: { sri: { runtimePatchDynamicLinks: false } },
       },
-      "assets/[name]-[hash].chunk",
+      { entryFileNames: "assets/[name]-[hash].chunk" },
     );
     const entryHash = `sha256-${generateHash(result.entry.code, "sha256")}`;
 
     expect(result.entry.fileName).toMatch(/\.chunk$/);
     expect(result.csp).toContain(`'${entryHash}'`);
     expect(scriptElemHashes(result.csp)).toContain(entryHash);
+  }, 30000);
+});
+
+describe("entry SRI runtime maps", () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(join(tmpdir(), "csp-guard-map-")));
+    await writeFixture(root);
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test("reachable maps use final integrities and exclude the entry", async () => {
+    const result = await buildFixture(root, {
+      algorithm: "sha256",
+      build: { sri: true },
+    });
+    expect(result.entry.code).not.toContain(
+      runtimeMapKey(result.entry.fileName),
+    );
+
+    for (const chunk of result.chunks.filter((item) => !item.isEntry)) {
+      expect(result.entry.code).toContain(
+        runtimeMapPair(
+          chunk.fileName,
+          `sha256-${generateHash(chunk.code, "sha256")}`,
+        ),
+      );
+    }
+    const cssFiles = result.output.filter(
+      (item): item is Rolldown.OutputAsset =>
+        item.type === "asset" && item.fileName.endsWith(".css"),
+    );
+    expect(cssFiles.length).toBeGreaterThan(0);
+    for (const css of cssFiles) {
+      expect(result.entry.code).toContain(
+        runtimeMapPair(
+          css.fileName,
+          `sha256-${generateHash(String(css.source), "sha256")}`,
+        ),
+      );
+    }
+  }, 30000);
+
+  test.each(["direct", "nested"] as const)(
+    "includes final CSS integrity for a %s CSS-only lazy import",
+    async (shape) => {
+      const cssRoot = await realpath(
+        await mkdtemp(join(tmpdir(), "csp-guard-css-lazy-")),
+      );
+      try {
+        await writeFile(
+          join(cssRoot, "index.html"),
+          "<!doctype html><html><head></head><body>" +
+            '<script type="module" src="./main.js"></script></body></html>',
+        );
+        if (shape === "direct") {
+          await writeFile(
+            join(cssRoot, "main.js"),
+            "window.load = () => import('./theme.css')\n",
+          );
+        } else {
+          await writeFile(
+            join(cssRoot, "main.js"),
+            "window.load = () => import('./lazy.js')\n",
+          );
+          await writeFile(
+            join(cssRoot, "lazy.js"),
+            "window.loadTheme = () => import('./theme.css')\n",
+          );
+        }
+        await writeFile(join(cssRoot, "theme.css"), ".theme { color: red; }\n");
+
+        const result = await buildFixture(cssRoot, {
+          algorithm: "sha256",
+          build: { sri: true },
+        });
+        const css = result.output.find(
+          (item): item is Rolldown.OutputAsset =>
+            item.type === "asset" && item.fileName.endsWith(".css"),
+        );
+        expect(css).toBeDefined();
+        expect(result.entry.code).toContain(
+          runtimeMapPair(
+            css!.fileName,
+            `sha256-${generateHash(String(css!.source), "sha256")}`,
+          ),
+        );
+        expect(result.entry.code).not.toContain(
+          runtimeMapKey(result.entry.fileName),
+        );
+      } finally {
+        await rm(cssRoot, { recursive: true, force: true });
+      }
+    },
+    30000,
+  );
+});
+
+describe("multi-page entry SRI runtime maps", () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(join(tmpdir(), "csp-guard-mpa-")));
+    for (const page of ["a", "b"]) {
+      await writeFile(
+        join(root, `${page}.html`),
+        `<!doctype html><html><head></head><body>` +
+          `<script type="module" src="./${page}.js"></script></body></html>`,
+      );
+    }
+    await writeFile(
+      join(root, "a.js"),
+      "window.a = () => import('./a-lazy.js')\n",
+    );
+    await writeFile(join(root, "a-lazy.js"), "export default 'a'\n");
+    await writeFile(
+      join(root, "b.js"),
+      "window.b = () => import('./b-lazy.js')\n",
+    );
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test("page b changes do not affect page a's map or name", async () => {
+    const input = { a: join(root, "a.html"), b: join(root, "b.html") };
+    const options: MyPluginOptions = {
+      algorithm: "sha256",
+      build: { sri: true },
+    };
+    const entries = () =>
+      buildFixture(root, options, { input }).then(({ chunks }) => chunks);
+
+    await writeFile(join(root, "b-lazy.js"), "export default 'b1'\n");
+    const first = await entries();
+    const firstA = first.find((chunk) => chunk.isEntry && chunk.name === "a")!;
+    const firstB = first.find((chunk) => chunk.isEntry && chunk.name === "b")!;
+    const bLazy = first.find((chunk) => chunk.name === "b-lazy")!;
+    expect(firstA.code).not.toContain(runtimeMapKey(bLazy.fileName));
+    expect(firstB.code).toContain(
+      runtimeMapPair(
+        bLazy.fileName,
+        `sha256-${generateHash(bLazy.code, "sha256")}`,
+      ),
+    );
+
+    await writeFile(join(root, "b-lazy.js"), "export default 'b2'\n");
+    const second = await entries();
+    const secondA = second.find(
+      (chunk) => chunk.isEntry && chunk.name === "a",
+    )!;
+    const secondB = second.find(
+      (chunk) => chunk.isEntry && chunk.name === "b",
+    )!;
+
+    expect(secondA.fileName).toBe(firstA.fileName);
+    expect(secondA.code).toBe(firstA.code);
+    expect(secondB.fileName).not.toBe(firstB.fileName);
   }, 30000);
 });
 
