@@ -81,6 +81,12 @@ export default function vitePluginCSP(
     crossorigin: isSriObject ? sri.crossorigin : undefined,
   };
 
+  const sriRuntimeOptions = `{crossorigin:${
+    sriConfig.crossorigin ? JSON.stringify(sriConfig.crossorigin) : "undefined"
+  },skipResources:${JSON.stringify(sriConfig.skipResources)}}`;
+  const sriRuntimeFingerprint =
+    `${installSriRuntime.toString()}|${sriRuntimeOptions}|${algorithm}`;
+
   const CORE_COLLECTION = createNewCollection();
 
   const overrideIsFine = overrideChecker({
@@ -251,6 +257,18 @@ export default function vitePluginCSP(
         return null;
       },
     },
+    augmentChunkHash(chunk) {
+      if (isDevMode || !sriConfig.enabled) return;
+      const salt: string[] = [];
+      if (sriConfig.runtimePatchDynamicLinks && chunk.isEntry) {
+        salt.push(sriRuntimeFingerprint);
+      }
+      // 4.0.x cleared these preload lists, so cached copies need new names.
+      if (!shouldSkip["script-src-elem"] && chunk.dynamicImports.length > 0) {
+        salt.push("vite-plugin-csp-guard:preload-lists-kept");
+      }
+      return salt.length ? salt.join("\n") : undefined;
+    },
     generateBundle: {
       order: "post",
       handler(_options, bundle: Rolldown.OutputBundle) {
@@ -274,11 +292,8 @@ export default function vitePluginCSP(
           //    (the integrity in HTML must match the final file content)
           if (sriConfig.runtimePatchDynamicLinks) {
             const serializedMap = JSON.stringify(sriByPathname);
-            const cors = sriConfig.crossorigin
-              ? JSON.stringify(sriConfig.crossorigin)
-              : "undefined";
-            const skip = JSON.stringify(sriConfig.skipResources);
-            const injected = `\n(${installSriRuntime.toString()})(${serializedMap},{crossorigin:${cors},skipResources:${skip}});\n`;
+            const injected =
+              `\n(${installSriRuntime.toString()})(${serializedMap},${sriRuntimeOptions});\n`;
 
             for (const [fileName, item] of Object.entries(bundle)) {
               if (item.type !== "chunk") continue;

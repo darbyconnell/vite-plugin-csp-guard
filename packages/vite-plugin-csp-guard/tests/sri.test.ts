@@ -34,14 +34,14 @@ async function writeFixture(root: string) {
 
 async function buildFixture(
   root: string,
-  options: MyPluginOptions,
+  options: MyPluginOptions | null,
   entryFileNames?: string,
 ) {
   const result = await build({
     configFile: false,
     root,
     logLevel: "silent",
-    plugins: [vitePluginCSP(options)],
+    plugins: options ? [vitePluginCSP(options)] : [],
     build: {
       write: false,
       minify: false,
@@ -76,6 +76,14 @@ async function buildFixture(
     output: output.output,
     $,
   };
+}
+
+type FixtureBuild = Awaited<ReturnType<typeof buildFixture>>;
+
+function chunkNames(result: FixtureBuild): Record<string, string> {
+  return Object.fromEntries(
+    result.chunks.map((chunk) => [chunk.name, chunk.fileName]),
+  );
 }
 
 function scriptElemHashes(csp: string | undefined): string[] {
@@ -168,6 +176,76 @@ describe("dynamic import preload lists", () => {
     expect(result.csp).toContain(`'${entryHash}'`);
     expect(scriptElemHashes(result.csp)).toContain(entryHash);
   }, 30000);
+});
+
+describe("SRI chunk file names", () => {
+  let root: string;
+  let plain: FixtureBuild;
+  let sri: FixtureBuild;
+  let sriRepeat: FixtureBuild;
+  let sriCrossorigin: FixtureBuild;
+  let sriSha384: FixtureBuild;
+  let noSri: FixtureBuild;
+  let skipInline: FixtureBuild;
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(join(tmpdir(), "csp-guard-names-")));
+    await writeFixture(root);
+    plain = await buildFixture(root, null);
+    sri = await buildFixture(root, { build: { sri: true } });
+    sriRepeat = await buildFixture(root, { build: { sri: true } });
+    sriCrossorigin = await buildFixture(root, {
+      build: { sri: { crossorigin: "anonymous" } },
+    });
+    sriSha384 = await buildFixture(root, {
+      algorithm: "sha384",
+      build: { sri: true },
+    });
+    noSri = await buildFixture(root, { build: { sri: false } });
+    skipInline = await buildFixture(root, {
+      policy: { "script-src-elem": ["'unsafe-inline'"] },
+      build: { sri: { runtimePatchDynamicLinks: false } },
+    });
+  }, 30000);
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  test("same config builds produce identical names", () => {
+    expect(chunkNames(sriRepeat)).toEqual(chunkNames(sri));
+  });
+
+  test("different runtime options rename the entry", () => {
+    expect(sriCrossorigin.entry.code).not.toEqual(sri.entry.code);
+    expect(sriCrossorigin.entry.fileName).not.toEqual(sri.entry.fileName);
+  });
+
+  test("a different hash algorithm renames the entry", () => {
+    expect(sriSha384.entry.code).not.toEqual(sri.entry.code);
+    expect(sriSha384.entry.fileName).not.toEqual(sri.entry.fileName);
+  });
+
+  test("only chunks changed by SRI are renamed", () => {
+    for (const chunk of plain.chunks) {
+      const sriChunk = sri.chunks.find((item) => item.name === chunk.name)!;
+      const changed = chunk.isEntry || chunk.dynamicImports.length > 0;
+      expect(sriChunk.fileName === chunk.fileName).toBe(!changed);
+    }
+  });
+
+  test("without SRI, names match a build without the plugin", () => {
+    expect(chunkNames(noSri)).toEqual(chunkNames(plain));
+  });
+
+  test("skipped script hashing does not salt non-entry chunks", () => {
+    for (const chunk of plain.chunks.filter((item) => !item.isEntry)) {
+      const skippedChunk = skipInline.chunks.find(
+        (item) => item.name === chunk.name,
+      )!;
+      expect(skippedChunk.fileName).toBe(chunk.fileName);
+    }
+  });
 });
 
 describe("transformPolicy with SRI", () => {
