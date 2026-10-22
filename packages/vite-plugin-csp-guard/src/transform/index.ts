@@ -127,6 +127,7 @@ export interface TransformIndexHtmlHandlerProps {
   cspContext: CSPPluginContext;
   sri: boolean;
   chunkHashes?: Map<string, string>;
+  provisionalChunkHashes?: Map<string, string>;
   transformPolicy?: MyPluginOptions["transformPolicy"];
 }
 
@@ -140,6 +141,7 @@ export const transformIndexHtmlHandler = ({
   cspContext,
   sri,
   chunkHashes,
+  provisionalChunkHashes,
   transformPolicy,
 }: TransformIndexHtmlHandlerProps) => {
   const { algorithm, policy, collection, shouldSkip, debug, requirements } =
@@ -196,8 +198,7 @@ export const transformIndexHtmlHandler = ({
                 );
               }
             }
-            // Keep emitted chunk bytes aligned with the hash/integrity we compute.
-            currentFile.code = code;
+            // Vite fills preload lists after this hook, so hash a copy only.
             hash = generateHash(code, algorithm);
             if (debug) {
               console.log(
@@ -205,6 +206,8 @@ export const transformIndexHtmlHandler = ({
               );
             }
           }
+
+          provisionalChunkHashes?.set(fileName, hash);
 
           if (!collection["script-src-elem"].has(`${algorithm}-${hash}`)) {
             addHash({

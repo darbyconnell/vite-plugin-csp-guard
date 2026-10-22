@@ -101,6 +101,10 @@ export default function vitePluginCSP(
   // Storage for final chunk hashes calculated in renderChunk hook
   const chunkHashes = new Map<string, string>();
 
+  // Chunk hashes added to the CSP before Vite fills the preload lists. The post
+  // generateBundle hook swaps them for hashes of the final chunk code.
+  const provisionalChunkHashes = new Map<string, string>();
+
   const requirements = parseOutliers(outlierSupport, buildOutlierSupport);
   const shouldSkip = calculateSkip(policy);
 
@@ -131,6 +135,7 @@ export default function vitePluginCSP(
     enforce: "post",
     buildStart() {
       pluginContext = this;
+      provisionalChunkHashes.clear();
       viteVersion = this.meta.viteVersion;
       if (!viteVersion) {
         throw new Error(
@@ -267,7 +272,6 @@ export default function vitePluginCSP(
 
           // 2. Inject runtime into entry chunks FIRST - before we hash them for HTML
           //    (the integrity in HTML must match the final file content)
-          const hashReplacements: { old: string; new: string }[] = [];
           if (sriConfig.runtimePatchDynamicLinks) {
             const serializedMap = JSON.stringify(sriByPathname);
             const cors = sriConfig.crossorigin
@@ -288,26 +292,21 @@ export default function vitePluginCSP(
             }
 
             // Rebuild integrity map so entry chunks have correct hashes (with runtime)
-            const newSriByPathname = buildIntegrityMappings(
+            sriByPathname = buildIntegrityMappings(
               rollupBundle,
               algorithm,
               debug,
             );
-            for (const [fileName, item] of Object.entries(bundle)) {
-              if (item.type !== "chunk") continue;
-              const chunk = item as { type: "chunk"; isEntry?: boolean };
-              if (!chunk.isEntry) continue;
-              const pathname = `/${fileName}`;
-              const oldIntegrity = sriByPathname[pathname];
-              const newIntegrity = newSriByPathname[pathname];
-              if (oldIntegrity && newIntegrity && oldIntegrity !== newIntegrity) {
-                hashReplacements.push({
-                  old: oldIntegrity,
-                  new: newIntegrity,
-                });
-              }
-            }
-            sriByPathname = newSriByPathname;
+          }
+
+          const hashReplacements: { old: string; new: string }[] = [];
+          for (const [fileName, provisional] of provisionalChunkHashes) {
+            const chunk = bundle[fileName];
+            if (chunk?.type !== "chunk") continue;
+            hashReplacements.push({
+              old: `${algorithm}-${provisional}`,
+              new: `${algorithm}-${generateHash(chunk.code, algorithm)}`,
+            });
           }
 
           const dynamicChunkFiles = analyzeDynamicImports(rollupBundle, debug);
@@ -339,7 +338,7 @@ export default function vitePluginCSP(
               sriConfig.crossorigin,
               sriConfig.skipResources,
               debug,
-              hashReplacements
+              hashReplacements,
             );
 
             htmlAssets.push({ asset, html: processed });
@@ -389,6 +388,7 @@ export default function vitePluginCSP(
           cspContext,
           sri: sriConfig.enabled,
           chunkHashes,
+          provisionalChunkHashes,
           transformPolicy,
         });
       },

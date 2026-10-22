@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import vitePluginCSP from "../src/index";
 import { generateHash } from "../src/policy/core";
+import { processHtmlForSri } from "../src/sri/processHtml";
 import { PENDING_POLICY_ATTR } from "../src/transform";
 import type { MyPluginOptions } from "../src/types";
 
@@ -31,7 +32,11 @@ async function writeFixture(root: string) {
   await writeFile(join(root, "deep.css"), ".deep { color: blue; }\n");
 }
 
-async function buildFixture(root: string, options: MyPluginOptions) {
+async function buildFixture(
+  root: string,
+  options: MyPluginOptions,
+  entryFileNames?: string,
+) {
   const result = await build({
     configFile: false,
     root,
@@ -41,6 +46,9 @@ async function buildFixture(root: string, options: MyPluginOptions) {
       write: false,
       minify: false,
       assetsDir: "assets",
+      ...(entryFileNames
+        ? { rolldownOptions: { output: { entryFileNames } } }
+        : {}),
     },
   });
   const output = (
@@ -80,6 +88,88 @@ function scriptElemHashes(csp: string | undefined): string[] {
   );
 }
 
+describe("dynamic import preload lists", () => {
+  let root: string;
+
+  beforeAll(async () => {
+    root = await realpath(await mkdtemp(join(tmpdir(), "csp-guard-preload-")));
+    await writeFixture(root);
+  });
+
+  afterAll(async () => {
+    await rm(root, { recursive: true, force: true });
+  });
+
+  const variants: Array<[string, MyPluginOptions]> = [
+    ["sri", { build: { sri: true } }],
+    [
+      "sri + vue-router outlier",
+      { build: { sri: true, outlierSupport: ["vue-router"] } },
+    ],
+    [
+      "sri without runtime",
+      { build: { sri: { runtimePatchDynamicLinks: false } } },
+    ],
+  ];
+
+  test.each(variants)(
+    "%s: keeps preload lists and hashes the code that is written",
+    async (_name, options) => {
+      const result = await buildFixture(root, {
+        algorithm: "sha256",
+        policy: { "script-src": ["'strict-dynamic'"] },
+        ...options,
+      });
+      // page.js lazy-imports deep.js, so deep's CSS is named only in page's
+      // preload list (the entry also carries the SRI runtime's file map).
+      const page = result.chunks.find((chunk) => chunk.name === "page")!;
+      const deepCss = result.output.find(
+        (item) => item.type === "asset" && /deep-.*\.css$/.test(item.fileName),
+      )!;
+
+      for (const chunk of result.chunks) {
+        expect(chunk.code).not.toContain("__VITE_PRELOAD__");
+      }
+      expect(page.code).toContain(deepCss.fileName);
+
+      expect(result.csp).toBeDefined();
+      for (const hash of result.finalHashes) {
+        expect(result.csp).toContain(`'${hash}'`);
+      }
+      expect([...new Set(scriptElemHashes(result.csp))].sort()).toEqual(
+        [...new Set(result.finalHashes)].sort(),
+      );
+      const entryHash = `sha256-${generateHash(result.entry.code, "sha256")}`;
+      const entryScript = result
+        .$("script[src]")
+        .filter(
+          (_, element) =>
+            result.$(element).attr("src")?.endsWith(result.entry.fileName) ??
+            false,
+        );
+      expect(entryScript.attr("integrity")).toBe(entryHash);
+    },
+    30000,
+  );
+
+  test("custom chunk extensions are replaced with their final code hash", async () => {
+    const result = await buildFixture(
+      root,
+      {
+        algorithm: "sha256",
+        policy: { "script-src": ["'strict-dynamic'"] },
+        build: { sri: { runtimePatchDynamicLinks: false } },
+      },
+      "assets/[name]-[hash].chunk",
+    );
+    const entryHash = `sha256-${generateHash(result.entry.code, "sha256")}`;
+
+    expect(result.entry.fileName).toMatch(/\.chunk$/);
+    expect(result.csp).toContain(`'${entryHash}'`);
+    expect(scriptElemHashes(result.csp)).toContain(entryHash);
+  }, 30000);
+});
+
 describe("transformPolicy with SRI", () => {
   let root: string;
 
@@ -108,6 +198,13 @@ describe("transformPolicy with SRI", () => {
           return null;
         },
       });
+      const page = result.chunks.find((chunk) => chunk.name === "page")!;
+      const deepCss = result.output.find(
+        (item) => item.type === "asset" && /deep-.*\.css$/.test(item.fileName),
+      )!;
+
+      expect(page.code).not.toContain("__VITE_PRELOAD__");
+      expect(page.code).toContain(deepCss.fileName);
       expect(received).toHaveLength(1);
       for (const hash of result.finalHashes) {
         expect(received[0]).toContain(`'${hash}'`);
@@ -196,4 +293,28 @@ describe("transformPolicy with SRI", () => {
     );
     expect((error as Error).message).not.toContain("SRI processing failed");
   }, 30000);
+});
+
+describe("processHtmlForSri hash replacements", () => {
+  test("uses a single replacement pass and preserves unchanged shared hashes", () => {
+    const html = processHtmlForSri(
+      "<meta http-equiv=\"Content-Security-Policy\" content=\"script-src-elem 'A' 'B'\">",
+      {},
+      new Set(),
+      "/",
+      undefined,
+      [],
+      false,
+      [
+        { old: "A", new: "B" },
+        { old: "A", new: "A" },
+        { old: "B", new: "C" },
+      ],
+    );
+    const $ = cheerio.load(html);
+
+    expect(
+      $('meta[http-equiv="Content-Security-Policy"]').attr("content"),
+    ).toBe("script-src-elem 'B' 'A' 'C'");
+  });
 });
