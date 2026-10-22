@@ -16,7 +16,11 @@ import {
   overrideChecker,
   generateHash,
 } from "./policy/core";
-import { transformHandler, transformIndexHtmlHandler } from "./transform";
+import {
+  applyPendingTransformPolicy,
+  transformHandler,
+  transformIndexHtmlHandler,
+} from "./transform";
 import {
   cssFilter,
   jsFilter,
@@ -250,6 +254,10 @@ export default function vitePluginCSP(
         // SRI helpers are typed against Rollup's OutputBundle; Vite 8 passes Rolldown's
         // bundle (compatible at runtime, distinct types).
         const rollupBundle = bundle as unknown as RollupOutputBundle;
+        const htmlAssets: {
+          asset: { type: "asset"; source: string | Buffer };
+          html: string;
+        }[] = [];
 
         try {
           if (debug) console.log("[SRI] Processing bundle for lazy chunk SRI...");
@@ -334,10 +342,18 @@ export default function vitePluginCSP(
               hashReplacements
             );
 
-            asset.source = processed;
+            htmlAssets.push({ asset, html: processed });
           }
         } catch (e) {
           console.error("[SRI] Error:", e);
+        }
+
+        for (const { asset, html } of htmlAssets) {
+          asset.source = applyPendingTransformPolicy(
+            html,
+            cspContext,
+            transformPolicy,
+          );
         }
       },
     },
