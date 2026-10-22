@@ -359,7 +359,10 @@ export default function vitePluginCSP(
             htmlAssets.push({ asset, html: processed });
           }
         } catch (e) {
-          console.error("[SRI] Error:", e);
+          const message = e instanceof Error ? e.message : String(e);
+          this.error(
+            new Error(`SRI processing failed: ${message}`, { cause: e }),
+          );
         }
 
         for (const { asset, html } of htmlAssets) {
