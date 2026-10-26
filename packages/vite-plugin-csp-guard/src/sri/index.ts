@@ -1,4 +1,4 @@
 export { buildIntegrityMappings } from "./IntegrityProcessor";
 export { analyzeDynamicImports } from "./DynamicImportAnalyzer";
-export { processHtmlForSri } from "./processHtml";
+export { processHtmlForSri, withBasePathname } from "./processHtml";
 export { installSriRuntime } from "./runtime";

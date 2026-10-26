@@ -1,6 +1,37 @@
 import * as cheerio from "cheerio";
 import * as path from "path";
 
+/**
+ * Pathname part of Vite's `base`, without a trailing slash: "/app/" -> "/app",
+ * "https://cdn.example.com/app/" -> "/app", "/" or "./" -> "".
+ */
+function basePathname(base: string): string {
+  try {
+    const pathname = new URL(base, "http://localhost/").pathname;
+    return pathname.endsWith("/") ? pathname.slice(0, -1) : pathname;
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * Re-keys an integrity map from "/<fileName>" to the URL pathname the browser
+ * requests, which includes the pathname of Vite's `base`.
+ */
+export function withBasePathname(
+  sriByPathname: Record<string, string>,
+  base: string
+): Record<string, string> {
+  const prefix = basePathname(base);
+  if (!prefix) return sriByPathname;
+  return Object.fromEntries(
+    Object.entries(sriByPathname).map(([pathname, integrity]) => [
+      `${prefix}${pathname}`,
+      integrity,
+    ])
+  );
+}
+
 function getIntegrityForUrl(
   url: string,
   sriByPathname: Record<string, string>
@@ -54,6 +85,7 @@ export function processHtmlForSri(
   hashReplacements?: { old: string; new: string }[]
 ): string {
   const $ = cheerio.load(html);
+  const sriByBasePathname = withBasePathname(sriByPathname, base);
 
   // Swap provisional CSP hashes for final ones in a single pass. Chunks with
   // identical code share a provisional hash but can end up with different
@@ -83,7 +115,9 @@ export function processHtmlForSri(
   $("script[src]").each((_, el) => {
     if (shouldSkip(el, skipResources)) return;
     const src = $(el).attr("src");
-    const integrity = src ? getIntegrityForUrl(src, sriByPathname) : undefined;
+    const integrity = src
+      ? getIntegrityForUrl(src, sriByBasePathname)
+      : undefined;
     if (integrity) {
       $(el).attr("integrity", integrity);
       if (crossorigin) $(el).attr("crossorigin", crossorigin);
@@ -101,7 +135,9 @@ export function processHtmlForSri(
       (rel === "preload" && ["script", "style", "font"].includes(as || ""));
     if (!eligible) return;
     const href = $(el).attr("href");
-    const integrity = href ? getIntegrityForUrl(href, sriByPathname) : undefined;
+    const integrity = href
+      ? getIntegrityForUrl(href, sriByBasePathname)
+      : undefined;
     // Always overwrite when we have a match
     if (integrity) {
       $(el).attr("integrity", integrity);
