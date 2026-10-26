@@ -25,7 +25,6 @@ function makeCspContext(overrides: Partial<CSPPluginContext> = {}): CSPPluginCon
     policy,
     requirements: overrides.requirements ?? {
       postTransform: false,
-      strongLazyLoading: false,
     },
     debug: overrides.debug ?? false,
     isDevMode: overrides.isDevMode ?? false,

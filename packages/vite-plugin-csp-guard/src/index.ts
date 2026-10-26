@@ -64,7 +64,6 @@ export default function vitePluginCSP(
   const { outlierSupport = [], run = false, override: devOverride } = dev;
   const {
     sri = false,
-    outlierSupport: buildOutlierSupport = [],
     override: buildOverride,
   } = build;
 
@@ -106,9 +105,6 @@ export default function vitePluginCSP(
   const transformationStatus: TransformationStatus = new Map<string, boolean>();
   const isTransformationStatusEmpty = () => transformationStatus.size === 0;
 
-  // Storage for final chunk hashes calculated in renderChunk hook
-  const chunkHashes = new Map<string, string>();
-
   // Chunk hashes added to the CSP before Vite fills the preload lists. The post
   // generateBundle hook swaps them for hashes of the final chunk code.
   const provisionalChunkHashes = new Map<string, string>();
@@ -118,7 +114,7 @@ export default function vitePluginCSP(
   // generateBundle hook runs.
   const filesByModuleId = new Map<string, string[]>();
 
-  const requirements = parseOutliers(outlierSupport, buildOutlierSupport);
+  const requirements = parseOutliers(outlierSupport);
   const shouldSkip = calculateSkip(policy);
 
   // Create the shared plugin context
@@ -225,45 +221,6 @@ export default function vitePluginCSP(
           server,
           transformMode: requirements.postTransform ? "post" : "pre",
         });
-        return null;
-      },
-    },
-    renderChunk: {
-      order: "post",
-      handler(code, chunk, _options) {
-        // Only process in build mode (not dev mode)
-        if (isDevAndAllowed()) return null;
-
-        // Skip if we're not hashing script-src-elem
-        if (shouldSkip["script-src-elem"]) return null;
-
-        // This hook runs after all transformations (including minification)
-        // so we get the final code that will be written to disk
-        let finalCode = code;
-
-        // Handle __VITE_PRELOAD__ replacements if present
-        if (code.includes("__VITE_PRELOAD__")) {
-          if (debug) {
-            console.log(`Found __VITE_PRELOAD__ in chunk: ${chunk.fileName}`);
-          }
-          // We need access to the full bundle to replace correctly
-          // This will be handled in transformIndexHtml where we have the bundle
-          // For now, just mark that this chunk needs special handling
-        }
-
-        // Generate hash for this chunk's final code
-        const hash = generateHash(finalCode, algorithm);
-
-        // Store the hash mapped to the chunk filename
-        chunkHashes.set(chunk.fileName, hash);
-
-        if (debug) {
-          console.log(
-            `Hashed chunk ${chunk.fileName}: sha256-${hash.substring(0, 20)}...`,
-          );
-        }
-
-        // Return null to not modify the chunk
         return null;
       },
     },
@@ -435,7 +392,6 @@ export default function vitePluginCSP(
           isTransformationStatusEmpty: isTransformationStatusEmpty(),
           cspContext,
           sri: sriConfig.enabled,
-          chunkHashes,
           provisionalChunkHashes,
           transformPolicy,
         });

@@ -1,9 +1,6 @@
 import { createFilter } from "vite";
-import { BuildOutlier, DevOutlier, WarnMissingPolicyProps } from "./types";
-import {
-  REQUIRE_POST_TRANSFORM,
-  REQUIRE_STRONGER_LAZY_LOADING,
-} from "./transform/constants";
+import { DevOutlier, WarnMissingPolicyProps } from "./types";
+import { REQUIRE_POST_TRANSFORM } from "./transform/constants";
 
 export const extractBaseURL = (url: string): string | false => {
   try {
@@ -39,16 +36,10 @@ export const jsFilter = createFilter(["**/*.js?(*)", "**/*.jsx?(*)"]);
 export const tsFilter = createFilter(["**/*.ts", "**/*.tsx"]);
 export const htmlFilter = createFilter("**.html");
 
-export const parseOutliers = (
-  devOutliers: Array<DevOutlier>,
-  buildOutliers: Array<BuildOutlier>
-) => {
+export const parseOutliers = (devOutliers: Array<DevOutlier>) => {
   return {
     postTransform: devOutliers.some((outlier) =>
       REQUIRE_POST_TRANSFORM.includes(outlier)
-    ),
-    strongLazyLoading: buildOutliers.some((outlier) =>
-      REQUIRE_STRONGER_LAZY_LOADING.includes(outlier)
     ),
   };
 };

@@ -222,7 +222,6 @@ export type CSPPluginContext = {
   policy: CSPPolicy | DefinedPolicy;
   requirements: {
     postTransform: boolean;
-    strongLazyLoading: boolean;
   };
   debug: boolean;
   isDevMode: boolean;
