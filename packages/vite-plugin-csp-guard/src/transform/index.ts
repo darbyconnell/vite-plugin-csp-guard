@@ -6,7 +6,6 @@ import type {
 import { addHash, generateHash } from "../policy/core";
 import * as cheerio from "cheerio";
 import {
-  type BundleContext,
   type CSPPluginContext,
   type MyPluginOptions,
   TransformationStatus,
@@ -152,8 +151,6 @@ export const transformIndexHtmlHandler = ({
     return;
   }
 
-  const bundleContext = {} as BundleContext;
-
   if (bundle && sri) {
     for (const fileName of Object.keys(bundle)) {
       const currentFile = bundle[fileName];
@@ -220,12 +217,6 @@ export const transformIndexHtmlHandler = ({
               collection: collection,
             });
           }
-
-          // Store hash for SRI integrity attributes
-          bundleContext[fileName] = {
-            type: "chunk",
-            hash,
-          };
         }
       }
     }
@@ -238,7 +229,6 @@ export const transformIndexHtmlHandler = ({
       collection,
       policy,
       context: pluginContext,
-      bundleContext: bundle ? bundleContext : undefined,
     },
   );
 
