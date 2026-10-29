@@ -35,6 +35,7 @@ export function withBasePathname(
 function getIntegrityForUrl(
   url: string,
   sriByPathname: Record<string, string>,
+  base: string,
   htmlFileName?: string
 ): string | undefined {
   if (!url) return undefined;
@@ -43,9 +44,67 @@ function getIntegrityForUrl(
       url,
       htmlFileName ? `http://localhost/${htmlFileName}` : "http://localhost"
     );
+
+    let assetOrigin:
+      | {
+          origin: string;
+          hostname: string;
+          port: string;
+          protocolRelative: boolean;
+        }
+      | undefined;
+    try {
+      if (base.startsWith("//")) {
+        const baseUrl = new URL(`http:${base}`);
+        const authority = base.slice(2).split(/[/?#]/, 1)[0] || "";
+        const explicitPort = /:(\d+)$/.exec(authority)?.[1];
+        assetOrigin = {
+          origin: baseUrl.origin,
+          hostname: baseUrl.hostname,
+          port: explicitPort ?? baseUrl.port,
+          protocolRelative: true,
+        };
+      } else if (/^[a-z][a-z\d+.-]*:\/\//i.test(base)) {
+        const baseUrl = new URL(base);
+        if (baseUrl.origin !== "null") {
+          assetOrigin = {
+            origin: baseUrl.origin,
+            hostname: baseUrl.hostname,
+            port: baseUrl.port,
+            protocolRelative: false,
+          };
+        }
+      }
+    } catch {
+      // Path and relative bases have no asset origin at build time.
+    }
+
+    if (assetOrigin) {
+      if (assetOrigin.protocolRelative) {
+        const defaultPort = parsed.protocol === "https:" ? "443" : "80";
+        const parsedPort = parsed.port || defaultPort;
+        const basePort = assetOrigin.port || defaultPort;
+        if (
+          (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+          parsed.hostname !== assetOrigin.hostname ||
+          parsedPort !== basePort
+        ) {
+          return undefined;
+        }
+      } else if (parsed.origin !== assetOrigin.origin) {
+        return undefined;
+      }
+    } else if (
+      parsed.origin !== "http://localhost" ||
+      /^[a-z][a-z\d+.-]*:/i.test(url) ||
+      url.startsWith("//")
+    ) {
+      return undefined;
+    }
+
     return sriByPathname[parsed.pathname];
   } catch {
-    return sriByPathname[url] || sriByPathname[`/${url}`];
+    return undefined;
   }
 }
 
@@ -121,7 +180,7 @@ export function processHtmlForSri(
     if (shouldSkip(el, skipResources)) return;
     const src = $(el).attr("src");
     const integrity = src
-      ? getIntegrityForUrl(src, sriByBasePathname, htmlFileName)
+      ? getIntegrityForUrl(src, sriByBasePathname, base, htmlFileName)
       : undefined;
     if (integrity) {
       $(el).attr("integrity", integrity);
@@ -144,7 +203,7 @@ export function processHtmlForSri(
     if (!eligible) return;
     const href = $(el).attr("href");
     const integrity = href
-      ? getIntegrityForUrl(href, sriByBasePathname, htmlFileName)
+      ? getIntegrityForUrl(href, sriByBasePathname, base, htmlFileName)
       : undefined;
     // Always overwrite when we have a match
     if (integrity) {

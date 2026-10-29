@@ -247,9 +247,8 @@ export default function vitePluginCSP(
       if (sriConfig.runtimePatchDynamicLinks && chunk.isEntry) {
         salt.push(sriRuntimeFingerprint);
         salt.push(SRI_INJECTION_VERSION);
-        const relativeBase =
-          resolvedConfig?.base === "./" || resolvedConfig?.base === "";
-        salt.push(`base:${relativeBase ? "relative" : "absolute"}`);
+        // The injected call embeds base-derived values (map keys, root, assetBase).
+        salt.push(`base:${resolvedConfig?.base ?? "/"}`);
       }
       // 4.0.x cleared these preload lists, so cached copies need new names.
       if (!shouldSkip["script-src-elem"] && chunk.dynamicImports.length > 0) {
@@ -281,6 +280,12 @@ export default function vitePluginCSP(
           if (sriConfig.runtimePatchDynamicLinks) {
             const runtime = installSriRuntime.toString();
             const relativeBase = base === "./" || base === "";
+            // Full-URL and protocol-relative bases serve assets from another
+            // origin; the runtime only applies SRI to URLs on that origin.
+            const assetBaseOption =
+              base.startsWith("//") || /^[a-z][a-z\d+.-]*:\/\//i.test(base)
+                ? `,assetBase:${JSON.stringify(base)}`
+                : "";
             for (const [fileName, chunk] of Object.entries(bundle)) {
               if (chunk.type !== "chunk" || !chunk.isEntry || !chunk.code) {
                 continue;
@@ -299,7 +304,7 @@ export default function vitePluginCSP(
               const map = JSON.stringify(withBasePathname(entryMap, base));
               // A relative base can be deployed under any path, so resolve the
               // map against the entry chunk's own URL at runtime.
-              let options = sriRuntimeOptions;
+              let options = `${sriRuntimeOptions.slice(0, -1)}${assetBaseOption}}`;
               if (relativeBase) {
                 const root =
                   _options.format === "es"
@@ -307,7 +312,7 @@ export default function vitePluginCSP(
                         "../".repeat((fileName.match(/\//g) || []).length) || "./",
                       )}, import.meta.url).href`
                     : `typeof document !== "undefined" ? document.baseURI : undefined`;
-                options = `${sriRuntimeOptions.slice(0, -1)},root:${root}}`;
+                options = `${options.slice(0, -1)},root:${root}}`;
               }
               injectRuntimeAndShiftSourceMaps(
                 chunk as unknown as OutputChunk,
