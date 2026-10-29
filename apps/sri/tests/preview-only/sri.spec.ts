@@ -292,4 +292,197 @@ test.describe("SRI integrity", () => {
     expect(result.outcome).toBe("error");
     expect(result.integrity).toMatch(/^sha256-/);
   });
+
+  test("Connected stylesheet setAttribute updates integrity when href changes", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Home 2", exact: true })).toBeVisible();
+
+    const stylesheets = await page
+      .locator('link[rel="stylesheet"][href*="/assets/"][href$=".css"]')
+      .evaluateAll((links) =>
+        links.map((link) => ({
+          href: (link as HTMLLinkElement).href,
+          integrity: link.getAttribute("integrity"),
+        }))
+      );
+    expect(stylesheets.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = stylesheets;
+    expect(first.integrity).toMatch(/^sha256-/);
+    expect(second.integrity).toMatch(/^sha256-/);
+
+    const result = await page.evaluate(async ({ firstHref, secondHref }) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.crossOrigin = "anonymous";
+      link.href = firstHref;
+      const waitForLoad = () =>
+        new Promise<"load" | "error" | "timeout">((resolve) => {
+          link.onload = () => resolve("load");
+          link.onerror = () => resolve("error");
+          window.setTimeout(() => resolve("timeout"), 5000);
+        });
+
+      const firstLoad = waitForLoad();
+      document.head.appendChild(link);
+      await firstLoad;
+
+      const secondLoad = waitForLoad();
+      link.setAttribute("href", secondHref);
+      const outcome = await secondLoad;
+      return { outcome, integrity: link.getAttribute("integrity") };
+    }, { firstHref: first.href, secondHref: second.href });
+
+    expect(result.outcome).toBe("load");
+    expect(result.integrity).toBe(second.integrity);
+  });
+
+  test("Connected stylesheet href property updates integrity", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Home 2", exact: true })).toBeVisible();
+
+    const stylesheets = await page
+      .locator('link[rel="stylesheet"][href*="/assets/"][href$=".css"]')
+      .evaluateAll((links) =>
+        links.map((link) => ({
+          href: (link as HTMLLinkElement).href,
+          integrity: link.getAttribute("integrity"),
+        }))
+      );
+    expect(stylesheets.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = stylesheets;
+    expect(first.integrity).toMatch(/^sha256-/);
+    expect(second.integrity).toMatch(/^sha256-/);
+
+    const result = await page.evaluate(async ({ firstHref, secondHref }) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.crossOrigin = "anonymous";
+      link.href = firstHref;
+      const waitForLoad = () =>
+        new Promise<"load" | "error" | "timeout">((resolve) => {
+          link.onload = () => resolve("load");
+          link.onerror = () => resolve("error");
+          window.setTimeout(() => resolve("timeout"), 5000);
+        });
+
+      const firstLoad = waitForLoad();
+      document.head.appendChild(link);
+      await firstLoad;
+
+      const secondLoad = waitForLoad();
+      link.href = secondHref;
+      const outcome = await secondLoad;
+      return { outcome, integrity: link.getAttribute("integrity") };
+    }, { firstHref: first.href, secondHref: second.href });
+
+    expect(result.outcome).toBe("load");
+    expect(result.integrity).toBe(second.integrity);
+  });
+
+  test("Changing a runtime-owned stylesheet to an unmapped URL clears integrity", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Home 2", exact: true })).toBeVisible();
+
+    const stylesheet = await page
+      .locator('link[rel="stylesheet"][href*="/assets/"][href$=".css"]')
+      .first()
+      .evaluate((link) => (link as HTMLLinkElement).href);
+    const unmappedUrl = new URL("/sri-regression-unmapped.css", page.url()).href;
+    await page.route(unmappedUrl, (route) =>
+      route.fulfill({ contentType: "text/css", body: "body { --sri-unmapped: loaded; }" })
+    );
+
+    const result = await page.evaluate(async ({ stylesheet, unmappedUrl }) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.crossOrigin = "anonymous";
+      link.href = stylesheet;
+      const waitForLoad = () =>
+        new Promise<"load" | "error" | "timeout">((resolve) => {
+          link.onload = () => resolve("load");
+          link.onerror = () => resolve("error");
+          window.setTimeout(() => resolve("timeout"), 5000);
+        });
+
+      const firstLoad = waitForLoad();
+      document.head.appendChild(link);
+      await firstLoad;
+
+      const nextLoad = waitForLoad();
+      link.href = unmappedUrl;
+      const outcome = await nextLoad;
+      return { outcome, integrity: link.getAttribute("integrity") };
+    }, { stylesheet, unmappedUrl });
+
+    expect(result.outcome).toBe("load");
+    expect(result.integrity).toBeNull();
+  });
+
+  test("Author-supplied stylesheet integrity is preserved after href changes", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("heading", { name: "Home 2", exact: true })).toBeVisible();
+
+    const stylesheets = await page
+      .locator('link[rel="stylesheet"][href*="/assets/"][href$=".css"]')
+      .evaluateAll((links) =>
+        links.map((link) => ({
+          href: (link as HTMLLinkElement).href,
+          integrity: link.getAttribute("integrity"),
+        }))
+      );
+    expect(stylesheets.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = stylesheets;
+    expect(first.integrity).toMatch(/^sha256-/);
+
+    const result = await page.evaluate(({ firstHref, secondHref, integrity }) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.crossOrigin = "anonymous";
+      link.setAttribute("integrity", integrity!);
+      link.href = firstHref;
+      document.head.appendChild(link);
+      link.href = secondHref;
+      return link.getAttribute("integrity");
+    }, { firstHref: first.href, secondHref: second.href, integrity: first.integrity });
+
+    expect(result).toBe(first.integrity);
+  });
+
+  test("Detached script property changes use the latest integrity at insertion", async ({ page }) => {
+    await page.goto("/");
+
+    const chunks = await page
+      .locator('link[rel="modulepreload"][href*="/assets/"]')
+      .evaluateAll((links) =>
+        links.map((link) => ({
+          href: (link as HTMLLinkElement).href,
+          integrity: link.getAttribute("integrity"),
+        }))
+      );
+    expect(chunks.length).toBeGreaterThanOrEqual(2);
+    const [first, second] = chunks;
+    expect(first.integrity).toMatch(/^sha256-/);
+    expect(second.integrity).toMatch(/^sha256-/);
+
+    const result = await page.evaluate(async ({ firstHref, secondHref }) => {
+      const detachedContainer = document.createElement("div");
+      const script = document.createElement("script");
+      script.type = "module";
+      script.src = firstHref;
+      detachedContainer.appendChild(script);
+      script.src = secondHref;
+
+      const outcomePromise = new Promise<"load" | "error" | "timeout">((resolve) => {
+        script.onload = () => resolve("load");
+        script.onerror = () => resolve("error");
+        window.setTimeout(() => resolve("timeout"), 5000);
+      });
+      document.head.appendChild(script);
+      const outcome = await outcomePromise;
+      return { outcome, integrity: script.getAttribute("integrity") };
+    }, { firstHref: first.href, secondHref: second.href });
+
+    expect(result.outcome).toBe("load");
+    expect(result.integrity).toBe(second.integrity);
+  });
 });
