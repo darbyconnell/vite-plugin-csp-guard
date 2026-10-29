@@ -266,13 +266,25 @@ export default function vitePluginCSP(
               ? JSON.stringify(sriConfig.crossorigin)
               : "undefined";
             const skip = JSON.stringify(sriConfig.skipResources);
-            const injected = `\n(${installSriRuntime.toString()})(${serializedMap},{crossorigin:${cors},skipResources:${skip}});\n`;
+            const relativeBase =
+              resolvedConfig?.base === "./" || resolvedConfig?.base === "";
 
             for (const [fileName, item] of Object.entries(bundle)) {
               if (item.type !== "chunk") continue;
               const chunk = item as { type: "chunk"; isEntry?: boolean; code?: string };
               if (!chunk.isEntry || !chunk.code) continue;
 
+              let rootOption = "";
+              if (relativeBase) {
+                const root =
+                  _options.format === "es"
+                    ? `new URL(${JSON.stringify(
+                        "../".repeat((fileName.match(/\//g) || []).length) || "./"
+                      )}, import.meta.url).href`
+                    : `typeof document !== "undefined" ? document.baseURI : undefined`;
+                rootOption = `,root:${root}`;
+              }
+              const injected = `\n(${installSriRuntime.toString()})(${serializedMap},{crossorigin:${cors},skipResources:${skip}${rootOption}});\n`;
               chunk.code = injected + chunk.code;
               if (debug) {
                 console.log(`[SRI] Injected runtime into entry: ${fileName}`);
@@ -305,7 +317,8 @@ export default function vitePluginCSP(
           const dynamicChunkFiles = analyzeDynamicImports(rollupBundle, debug);
 
           const base = resolvedConfig?.base ?? "/";
-          const baseNorm = base.endsWith("/") ? base.slice(0, -1) : base;
+          const baseNorm =
+            base.endsWith("/") && base !== "./" ? base.slice(0, -1) : base;
 
           // 3. Process HTML assets: add SRI to elements, inject modulepreload links
           for (const [fileName, item] of Object.entries(bundle)) {
@@ -331,7 +344,8 @@ export default function vitePluginCSP(
               sriConfig.crossorigin,
               sriConfig.skipResources,
               debug,
-              hashReplacements
+              hashReplacements,
+              fileName
             );
 
             asset.source = processed;

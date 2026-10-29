@@ -3,11 +3,15 @@ import * as path from "path";
 
 function getIntegrityForUrl(
   url: string,
-  sriByPathname: Record<string, string>
+  sriByPathname: Record<string, string>,
+  htmlFileName?: string
 ): string | undefined {
   if (!url) return undefined;
   try {
-    const parsed = new URL(url, "http://localhost");
+    const parsed = new URL(
+      url,
+      htmlFileName ? `http://localhost/${htmlFileName}` : "http://localhost"
+    );
     return sriByPathname[parsed.pathname];
   } catch {
     return sriByPathname[url] || sriByPathname[`/${url}`];
@@ -51,7 +55,8 @@ export function processHtmlForSri(
   skipResources: string[] = [],
   debug: boolean = false,
   /** Replace old hashes with new in CSP (for entry chunks after runtime injection) */
-  hashReplacements?: { old: string; new: string }[]
+  hashReplacements?: { old: string; new: string }[],
+  htmlFileName?: string
 ): string {
   const $ = cheerio.load(html);
 
@@ -77,7 +82,9 @@ export function processHtmlForSri(
   $("script[src]").each((_, el) => {
     if (shouldSkip(el, skipResources)) return;
     const src = $(el).attr("src");
-    const integrity = src ? getIntegrityForUrl(src, sriByPathname) : undefined;
+    const integrity = src
+      ? getIntegrityForUrl(src, sriByPathname, htmlFileName)
+      : undefined;
     if (integrity) {
       $(el).attr("integrity", integrity);
       if (crossorigin) $(el).attr("crossorigin", crossorigin);
@@ -95,7 +102,9 @@ export function processHtmlForSri(
       (rel === "preload" && ["script", "style", "font"].includes(as || ""));
     if (!eligible) return;
     const href = $(el).attr("href");
-    const integrity = href ? getIntegrityForUrl(href, sriByPathname) : undefined;
+    const integrity = href
+      ? getIntegrityForUrl(href, sriByPathname, htmlFileName)
+      : undefined;
     // Always overwrite when we have a match
     if (integrity) {
       $(el).attr("integrity", integrity);
@@ -112,7 +121,16 @@ export function processHtmlForSri(
 
   const preloads: string[] = [];
   for (const chunkFile of dynamicChunkFiles) {
-    const href = base ? path.posix.join(base, chunkFile) : `/${chunkFile}`;
+    let href: string;
+    if (base === "./" || base === "") {
+      const relativePath = path.posix.relative(
+        path.posix.dirname(htmlFileName || "."),
+        chunkFile
+      );
+      href = relativePath.startsWith("../") ? relativePath : `./${relativePath}`;
+    } else {
+      href = base ? path.posix.join(base, chunkFile) : `/${chunkFile}`;
+    }
     if (existingHrefs.has(href)) continue;
     const pathname = `/${chunkFile}`;
     const integrity = sriByPathname[pathname];
