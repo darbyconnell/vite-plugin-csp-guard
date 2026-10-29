@@ -14,13 +14,23 @@ function getIntegrityForUrl(
       htmlFileName ? `http://localhost/${htmlFileName}` : "http://localhost"
     );
 
-    let assetOrigin: { origin: string; host: string; protocolRelative: boolean } | undefined;
+    let assetOrigin:
+      | {
+          origin: string;
+          hostname: string;
+          port: string;
+          protocolRelative: boolean;
+        }
+      | undefined;
     try {
       if (base.startsWith("//")) {
         const baseUrl = new URL(`http:${base}`);
+        const authority = base.slice(2).split(/[/?#]/, 1)[0] || "";
+        const explicitPort = /:(\d+)$/.exec(authority)?.[1];
         assetOrigin = {
           origin: baseUrl.origin,
-          host: baseUrl.host,
+          hostname: baseUrl.hostname,
+          port: explicitPort ?? baseUrl.port,
           protocolRelative: true,
         };
       } else if (/^[a-z][a-z\d+.-]*:\/\//i.test(base)) {
@@ -28,7 +38,8 @@ function getIntegrityForUrl(
         if (baseUrl.origin !== "null") {
           assetOrigin = {
             origin: baseUrl.origin,
-            host: baseUrl.host,
+            hostname: baseUrl.hostname,
+            port: baseUrl.port,
             protocolRelative: false,
           };
         }
@@ -39,9 +50,13 @@ function getIntegrityForUrl(
 
     if (assetOrigin) {
       if (assetOrigin.protocolRelative) {
+        const defaultPort = parsed.protocol === "https:" ? "443" : "80";
+        const parsedPort = parsed.port || defaultPort;
+        const basePort = assetOrigin.port || defaultPort;
         if (
           (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
-          parsed.host !== assetOrigin.host
+          parsed.hostname !== assetOrigin.hostname ||
+          parsedPort !== basePort
         ) {
           return undefined;
         }

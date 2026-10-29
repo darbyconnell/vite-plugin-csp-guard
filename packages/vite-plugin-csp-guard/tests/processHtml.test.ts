@@ -84,6 +84,34 @@ describe("processHtmlForSri asset-origin matching", () => {
     expect(scripts.eq(2).attr("crossorigin")).toBeUndefined();
   });
 
+  test.each([
+    {
+      base: "//cdn.example.com:443/",
+      expected: [false, true],
+    },
+    {
+      base: "//cdn.example.com:80/",
+      expected: [true, false],
+    },
+  ])("matches protocol-relative base port $base using effective ports", ({
+    base,
+    expected,
+  }) => {
+    const html = processHtmlForSri(
+      `<script src="http://cdn.example.com/assets/main.js"></script><script src="https://cdn.example.com/assets/main.js"></script>`,
+      sriByPathname,
+      new Set(),
+      base,
+    );
+    const scripts = load(html)("script");
+
+    for (const index of [0, 1]) {
+      expect(scripts.eq(index).attr("integrity")).toBe(
+        expected[index] ? integrity : undefined,
+      );
+    }
+  });
+
   test("continues matching relative URLs for a relative base", () => {
     const html = processHtmlForSri(
       `<script src="./assets/main.js"></script>`,

@@ -80,15 +80,39 @@ test.describe("SRI integrity", () => {
   });
 
   test("Property-built third-party scripts are not given local integrity", async ({ page }) => {
-    // This app's CSP intentionally allows scripts only from 'self'. Remove that
-    // policy for this test so the browser can exercise the runtime's SRI matching.
+    // Add the test origin to the script policies while preserving the rest of CSP.
     await page.route("**/", async (route) => {
       if (!route.request().isNavigationRequest()) return route.continue();
       const response = await route.fetch();
       const html = await response.text();
+      const updatedHtml = html.replace(
+        /<meta\b[^>]*http-equiv="Content-Security-Policy"[^>]*>/i,
+        (meta) => {
+          const content = meta.match(/\bcontent="([^"]*)"/i);
+          if (!content) return meta;
+          const directives = content[1]
+            .split(";")
+            .map((directive) => directive.trim())
+            .filter(Boolean);
+          for (const name of ["script-src", "script-src-elem"]) {
+            const index = directives.findIndex((directive) =>
+              new RegExp(`^${name}(?:\\s|$)`, "i").test(directive),
+            );
+            if (index === -1) {
+              directives.push(`${name} 'self' https://third-party.example`);
+            } else if (!directives[index].includes("https://third-party.example")) {
+              directives[index] += " https://third-party.example";
+            }
+          }
+          return meta.replace(
+            content[0],
+            `content="${directives.join("; ")};"`,
+          );
+        },
+      );
       await route.fulfill({
         response,
-        body: html.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/i, ""),
+        body: updatedHtml,
       });
     });
     await page.goto("/");
@@ -154,6 +178,81 @@ test.describe("SRI integrity", () => {
 
     expect(result.baseURI).toBe(`${new URL(page.url()).origin}/nested/`);
     expect(result.integrity).toBeNull();
+  });
+
+  test("Relative URLs resolve against document.baseURI instead of location.href", async ({ page }) => {
+    await page.goto("/");
+
+    const chunkHref = await page
+      .locator('link[rel="modulepreload"][href*="/assets/"]')
+      .first()
+      .getAttribute("href");
+    expect(chunkHref).not.toBeNull();
+    const chunkName = new URL(chunkHref!, page.url()).pathname.split("/").pop();
+
+    const result = await page.evaluate((assetName) => {
+      const base = document.createElement("base");
+      base.href = "/nested/";
+      document.head.prepend(base);
+      const script = document.createElement("script");
+      script.setAttribute("src", `assets/${assetName}`);
+      return {
+        baseURI: document.baseURI,
+        locationHref: location.href,
+        integrity: script.getAttribute("integrity"),
+      };
+    }, chunkName);
+
+    expect(result.baseURI).toBe(`${new URL(page.url()).origin}/nested/`);
+    expect(result.locationHref).toBe(page.url());
+    expect(result.integrity).toBeNull();
+  });
+
+  test("Opaque-origin iframe runtime still adds integrity to in-map resources", async ({ page }) => {
+    await page.route("**/*", async (route) => {
+      const response = await route.fetch();
+      await route.fulfill({
+        response,
+        headers: {
+          ...response.headers(),
+          "access-control-allow-origin": "*",
+        },
+      });
+    });
+    await page.goto("/");
+
+    await page.evaluate(() => {
+      const iframe = document.createElement("iframe");
+      iframe.setAttribute("sandbox", "allow-scripts");
+      iframe.src = "/";
+      document.body.appendChild(iframe);
+    });
+
+    const frame = page.frameLocator('iframe[sandbox="allow-scripts"]');
+    await expect(frame.getByRole("heading", { name: "SRI Test App" })).toBeVisible();
+    const chunkHref = await frame
+      .locator('link[rel="modulepreload"][href*="/assets/"]')
+      .first()
+      .getAttribute("href");
+    expect(chunkHref).not.toBeNull();
+
+    const result = await frame.locator("body").evaluate((body, src) => {
+      const script = document.createElement("script");
+      script.setAttribute("src", src);
+      let canAccessParent = true;
+      try {
+        void parent.document.body;
+      } catch {
+        canAccessParent = false;
+      }
+      return {
+        canAccessParent,
+        integrity: script.getAttribute("integrity"),
+      };
+    }, chunkHref!);
+
+    expect(result.canAccessParent).toBe(false);
+    expect(result.integrity).toMatch(/^sha256-/);
   });
 
   test("Property-built scripts are checked before they are inserted", async ({ page }) => {
