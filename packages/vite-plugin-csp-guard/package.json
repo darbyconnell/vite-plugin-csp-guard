@@ -34,6 +34,7 @@
     "vite": "^8.0.0"
   },
   "devDependencies": {
+    "@jridgewell/trace-mapping": "^0.3.30",
     "@repo/eslint-config": "workspace:^",
     "@rollup/plugin-commonjs": "^26.0.1",
     "@rollup/plugin-node-resolve": "^15.2.3",

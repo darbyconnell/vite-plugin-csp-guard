@@ -852,6 +852,9 @@ importers:
         specifier: ^1.5.0
         version: 1.5.0
     devDependencies:
+      '@jridgewell/trace-mapping':
+        specifier: ^0.3.30
+        version: 0.3.30
       '@repo/eslint-config':
         specifier: workspace:^
         version: link:../eslint-config

@@ -39,7 +39,8 @@ import {
   withBasePathname,
   collectReachableFiles,
 } from "./sri";
-import type { OutputBundle as RollupOutputBundle } from "rollup";
+import { injectRuntimeAndShiftSourceMaps } from "./sri/injectRuntime";
+import type { OutputBundle as RollupOutputBundle, OutputChunk } from "rollup";
 
 export default function vitePluginCSP(
   options: MyPluginOptions | undefined = {},
@@ -290,7 +291,11 @@ export default function vitePluginCSP(
                 if (integrity) entryMap[`/${file}`] = integrity;
               }
               const map = JSON.stringify(withBasePathname(entryMap, base));
-              chunk.code = `\n(${runtime})(${map},${sriRuntimeOptions});\n${chunk.code}`;
+              injectRuntimeAndShiftSourceMaps(
+                chunk as unknown as OutputChunk,
+                rollupBundle,
+                `(${runtime})(${map},${sriRuntimeOptions});\n`,
+              );
               if (debug) {
                 console.log(`[SRI] Injected runtime into entry: ${fileName}`);
               }
