@@ -87,6 +87,8 @@ export default function vitePluginCSP(
   },skipResources:${JSON.stringify(sriConfig.skipResources)}}`;
   const sriRuntimeFingerprint =
     `${installSriRuntime.toString()}|${sriRuntimeOptions}|${algorithm}`;
+  // Bump whenever the injected wrapper around the SRI runtime changes.
+  const SRI_INJECTION_VERSION = "2";
 
   const CORE_COLLECTION = createNewCollection();
 
@@ -283,6 +285,10 @@ export default function vitePluginCSP(
       const salt: string[] = [];
       if (sriConfig.runtimePatchDynamicLinks && chunk.isEntry) {
         salt.push(sriRuntimeFingerprint);
+        salt.push(SRI_INJECTION_VERSION);
+        const relativeBase =
+          resolvedConfig?.base === "./" || resolvedConfig?.base === "";
+        salt.push(`base:${relativeBase ? "relative" : "absolute"}`);
       }
       // 4.0.x cleared these preload lists, so cached copies need new names.
       if (!shouldSkip["script-src-elem"] && chunk.dynamicImports.length > 0) {
