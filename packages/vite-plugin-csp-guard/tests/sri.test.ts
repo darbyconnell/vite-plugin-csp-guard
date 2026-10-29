@@ -35,17 +35,26 @@ async function writeFixture(root: string) {
 async function buildFixture(
   root: string,
   options: MyPluginOptions | null,
-  config: { entryFileNames?: string; input?: Record<string, string> } = {},
+  config: {
+    base?: string;
+    entryFileNames?: string;
+    input?: Record<string, string>;
+    library?: boolean;
+  } = {},
 ) {
   const result = await build({
     configFile: false,
     root,
+    base: config.base,
     logLevel: "silent",
     plugins: options ? [vitePluginCSP(options)] : [],
     build: {
       write: false,
       minify: false,
       assetsDir: "assets",
+      ...(config.library
+        ? { lib: { entry: join(root, "main.js"), formats: ["es"] as const } }
+        : {}),
       ...(config.entryFileNames || config.input
         ? {
             rolldownOptions: {
@@ -389,6 +398,44 @@ describe("SRI chunk file names", () => {
   afterAll(async () => {
     await rm(root, { recursive: true, force: true });
   });
+
+  test("relative bases produce distinct entry names deterministically", async () => {
+    const baseRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "csp-guard-base-names-")),
+    );
+    try {
+      await writeFile(
+        join(baseRoot, "main.js"),
+        "window.load = (path) => import(path)\n",
+      );
+      await writeFile(join(baseRoot, "lazy.js"), "export default 42\n");
+
+      const sriOptions: MyPluginOptions = { build: { sri: true } };
+      const absoluteBase = await buildFixture(baseRoot, sriOptions, {
+        base: "/",
+        entryFileNames: "assets/[name]-[hash].js",
+        library: true,
+      });
+      const relativeBase = await buildFixture(baseRoot, sriOptions, {
+        base: "./",
+        entryFileNames: "assets/[name]-[hash].js",
+        library: true,
+      });
+      const relativeBaseRepeat = await buildFixture(baseRoot, sriOptions, {
+        base: "./",
+        entryFileNames: "assets/[name]-[hash].js",
+        library: true,
+      });
+
+      expect(absoluteBase.entry.code).toContain("import(path)");
+      expect(absoluteBase.entry.fileName).not.toBe(relativeBase.entry.fileName);
+      expect(relativeBaseRepeat.entry.fileName).toBe(
+        relativeBase.entry.fileName,
+      );
+    } finally {
+      await rm(baseRoot, { recursive: true, force: true });
+    }
+  }, 30000);
 
   test("same config builds produce identical names", () => {
     expect(chunkNames(sriRepeat)).toEqual(chunkNames(sri));
