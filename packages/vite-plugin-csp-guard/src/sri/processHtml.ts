@@ -1,5 +1,4 @@
 import * as cheerio from "cheerio";
-import * as path from "path";
 
 /**
  * Pathname part of Vite's `base`, without a trailing slash: "/app/" -> "/app",
@@ -154,7 +153,8 @@ export function processHtmlForSri(
 
   const preloads: string[] = [];
   for (const chunkFile of dynamicChunkFiles) {
-    const href = base ? path.posix.join(base, chunkFile) : `/${chunkFile}`;
+    const normalizedBase = base.replace(/\/+$/, "");
+    const href = normalizedBase ? `${normalizedBase}/${chunkFile}` : `/${chunkFile}`;
     if (existingHrefs.has(href)) continue;
     const pathname = `/${chunkFile}`;
     const integrity = sriByPathname[pathname];
