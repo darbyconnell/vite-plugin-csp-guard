@@ -155,6 +155,7 @@ export function processHtmlForSri(
   for (const chunkFile of dynamicChunkFiles) {
     const normalizedBase = base.replace(/\/+$/, "");
     const href = normalizedBase ? `${normalizedBase}/${chunkFile}` : `/${chunkFile}`;
+    if (skipResources.some((pattern) => matchesPattern(pattern, href))) continue;
     if (existingHrefs.has(href)) continue;
     const pathname = `/${chunkFile}`;
     const integrity = sriByPathname[pathname];

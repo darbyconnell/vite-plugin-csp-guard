@@ -41,4 +41,73 @@ describe("processHtmlForSri dynamic modulepreload URLs", () => {
 
     expect(html.match(/<link\b[^>]*rel="modulepreload"/g)).toHaveLength(1);
   });
+
+  test("omits an exact-match skipped chunk but preloads other lazy chunks", () => {
+    const html = processHtmlForSri(
+      "<html><head></head><body></body></html>",
+      {
+        "/assets/page.js": "sha384-page",
+        "/assets/other.js": "sha384-other",
+      },
+      new Set(["assets/page.js", "assets/other.js"]),
+      "",
+      undefined,
+      ["/assets/page.js"]
+    );
+
+    expect(html).not.toContain('href="/assets/page.js"');
+    expect(html).toContain(
+      '<link rel="modulepreload" href="/assets/other.js" integrity="sha384-other"'
+    );
+  });
+
+  test("matches glob exclusions for generated chunk preloads", () => {
+    const html = processHtmlForSri(
+      "<html><head></head><body></body></html>",
+      { "/assets/page.js": "sha384-page" },
+      new Set(["assets/page.js"]),
+      "",
+      undefined,
+      ["*page*"]
+    );
+
+    expect(html).not.toContain('href="/assets/page.js"');
+  });
+
+  test("matches skipped preloads against the emitted full-URL href", () => {
+    const html = processHtmlForSri(
+      "<html><head></head><body></body></html>",
+      { "/assets/page.js": "sha384-page" },
+      new Set(["assets/page.js"]),
+      "https://cdn.example.com/app",
+      undefined,
+      ["https://cdn.example.com/app/assets/page.js"]
+    );
+
+    expect(html).not.toContain(
+      'href="https://cdn.example.com/app/assets/page.js"'
+    );
+  });
+
+  test("keeps applying skipResources to existing links", () => {
+    const html = processHtmlForSri(
+      `<html><head>
+        <link rel="modulepreload" href="/assets/page.js">
+        <link rel="modulepreload" href="/assets/other.js">
+      </head><body></body></html>`,
+      {
+        "/assets/page.js": "sha384-page",
+        "/assets/other.js": "sha384-other",
+      },
+      new Set(),
+      "",
+      undefined,
+      ["/assets/page.js"]
+    );
+
+    expect(html).toContain('<link rel="modulepreload" href="/assets/page.js">');
+    expect(html).toContain(
+      '<link rel="modulepreload" href="/assets/other.js" integrity="sha384-other"'
+    );
+  });
 });
