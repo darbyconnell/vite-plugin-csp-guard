@@ -33,7 +33,8 @@ import {
   processHtmlForSri,
   installSriRuntime,
 } from "./sri";
-import type { OutputBundle as RollupOutputBundle } from "rollup";
+import { injectRuntimeAndShiftSourceMaps } from "./sri/injectRuntime";
+import type { OutputBundle as RollupOutputBundle, OutputChunk } from "rollup";
 
 export default function vitePluginCSP(
   options: MyPluginOptions | undefined = {},
@@ -266,14 +267,14 @@ export default function vitePluginCSP(
               ? JSON.stringify(sriConfig.crossorigin)
               : "undefined";
             const skip = JSON.stringify(sriConfig.skipResources);
-            const injected = `\n(${installSriRuntime.toString()})(${serializedMap},{crossorigin:${cors},skipResources:${skip}});\n`;
+            const injected = `(${installSriRuntime.toString()})(${serializedMap},{crossorigin:${cors},skipResources:${skip}});\n`;
 
             for (const [fileName, item] of Object.entries(bundle)) {
               if (item.type !== "chunk") continue;
-              const chunk = item as { type: "chunk"; isEntry?: boolean; code?: string };
+              const chunk = item as unknown as OutputChunk;
               if (!chunk.isEntry || !chunk.code) continue;
 
-              chunk.code = injected + chunk.code;
+              injectRuntimeAndShiftSourceMaps(chunk, rollupBundle, injected);
               if (debug) {
                 console.log(`[SRI] Injected runtime into entry: ${fileName}`);
               }
