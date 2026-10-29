@@ -317,8 +317,6 @@ export default function vitePluginCSP(
           const dynamicChunkFiles = analyzeDynamicImports(rollupBundle, debug);
 
           const base = resolvedConfig?.base ?? "/";
-          const baseNorm =
-            base.endsWith("/") && base !== "./" ? base.slice(0, -1) : base;
 
           // 3. Process HTML assets: add SRI to elements, inject modulepreload links
           for (const [fileName, item] of Object.entries(bundle)) {
@@ -340,7 +338,7 @@ export default function vitePluginCSP(
               html,
               sriByPathname,
               dynamicChunkFiles,
-              baseNorm,
+              base,
               sriConfig.crossorigin,
               sriConfig.skipResources,
               debug,

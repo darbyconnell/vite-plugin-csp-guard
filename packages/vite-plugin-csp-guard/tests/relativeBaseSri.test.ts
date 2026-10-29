@@ -23,8 +23,8 @@ afterEach(async () => {
   );
 });
 
-describe.each(["./", ""])("SRI with relative base %j", (base) => {
-  test("uses HTML-relative preloads and roots the runtime SRI map", async () => {
+describe.each(["./", "", "/", "/app/"])("SRI with base %j", (base) => {
+  test("uses the expected HTML-relative or absolute preload paths", async () => {
     const tempDir = await realpath(
       await mkdtemp(path.join(os.tmpdir(), "csp-guard-relative-base-")),
     );
@@ -94,11 +94,17 @@ describe.each(["./", ""])("SRI with relative base %j", (base) => {
       },
     });
 
+    const relativeBase = base === "./" || base === "";
+    const absoluteBase = base.replace(/\/+$/, "");
+    const expectedAbsolutePrefix = `${absoluteBase}/assets/`;
     const entryFiles = new Set<string>();
-    for (const [htmlFile, expectedPrefix] of [
+    for (const [htmlFile, relativePrefix] of [
       ["index.html", "./assets/"],
       ["sub/index.html", "../assets/"],
     ]) {
+      const expectedPrefix = relativeBase
+        ? relativePrefix
+        : expectedAbsolutePrefix;
       const html = await readFile(path.join(outDir, htmlFile), "utf8");
       const $ = load(html);
       const preloadHrefs = $("link[rel='modulepreload']")
@@ -120,18 +126,20 @@ describe.each(["./", ""])("SRI with relative base %j", (base) => {
         const integrity = $(`link[rel='modulepreload'][href="${href}"]`).attr(
           "integrity",
         );
-        expect(integrity).toMatch(/^sha256-/);
+        if (base !== "/app/") expect(integrity).toMatch(/^sha256-/);
       }
 
       const entryScript = $("script[type='module'][src]").first();
       const scriptSrc = entryScript.attr("src");
       expect(scriptSrc).toBeTruthy();
-      expect(entryScript.attr("integrity")).toMatch(/^sha256-/);
+      if (base !== "/app/") {
+        expect(entryScript.attr("integrity")).toMatch(/^sha256-/);
+      }
+      const htmlUrl = new URL(htmlFile, "http://localhost/");
+      const entryPathname = new URL(scriptSrc!, htmlUrl).pathname;
+      const deploymentRoot = new URL(base || "./", "http://localhost/").pathname;
       const entryFile = path.posix.normalize(
-        path.posix.join(
-          path.posix.dirname(htmlFile),
-          scriptSrc!.replace(/^\.\//, ""),
-        ),
+        path.posix.relative(deploymentRoot, entryPathname),
       );
       entryFiles.add(entryFile);
       const entryCode = await readFile(path.join(outDir, entryFile), "utf8");
@@ -139,7 +147,7 @@ describe.each(["./", ""])("SRI with relative base %j", (base) => {
       const runtimeRoot = `root:new URL(${JSON.stringify(
         "../".repeat(depth) || "./",
       )}, import.meta.url).href`;
-      expect(entryCode).toContain(runtimeRoot);
+      if (relativeBase) expect(entryCode).toContain(runtimeRoot);
     }
     expect(entryFiles.size).toBe(2);
   });

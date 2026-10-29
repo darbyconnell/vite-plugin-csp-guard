@@ -129,7 +129,8 @@ export function processHtmlForSri(
       );
       href = relativePath.startsWith("../") ? relativePath : `./${relativePath}`;
     } else {
-      href = base ? path.posix.join(base, chunkFile) : `/${chunkFile}`;
+      const normalizedBase = base.replace(/\/+$/, "");
+      href = normalizedBase ? `${normalizedBase}/${chunkFile}` : `/${chunkFile}`;
     }
     if (existingHrefs.has(href)) continue;
     const pathname = `/${chunkFile}`;
