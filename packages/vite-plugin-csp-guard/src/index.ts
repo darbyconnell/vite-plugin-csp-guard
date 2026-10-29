@@ -302,7 +302,9 @@ export default function vitePluginCSP(
             sriByPathname = newSriByPathname;
           }
 
-          const dynamicChunkFiles = analyzeDynamicImports(rollupBundle, debug);
+          const dynamicChunkFiles = sriConfig.preloadDynamicChunks
+            ? analyzeDynamicImports(rollupBundle, debug)
+            : new Set<string>();
 
           const base = resolvedConfig?.base ?? "/";
           const baseNorm = base.endsWith("/") ? base.slice(0, -1) : base;
