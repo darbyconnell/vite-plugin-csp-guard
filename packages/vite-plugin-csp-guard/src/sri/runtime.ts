@@ -73,6 +73,21 @@ export function installSriRuntime(
         el.setAttribute("crossorigin", cors);
     };
 
+    // Set SRI before insertion, when the browser starts fetching the resource.
+    const prepareForInsertion = (node: any) => {
+      if (!node) return;
+      maybeSetIntegrity(node);
+      const descendants = node.querySelectorAll?.("script[src],link[href]");
+      if (descendants) {
+        for (let i = 0; i < descendants.length; i++)
+          maybeSetIntegrity(descendants[i]);
+      }
+    };
+
+    const prepareNodesForInsertion = (nodes: any[]) => {
+      for (const node of nodes) prepareForInsertion(node);
+    };
+
     const origSetAttr = (Element as any)?.prototype?.setAttribute;
     if (origSetAttr) {
       (Element as any).prototype.setAttribute = function (name: string, _v: string) {
@@ -95,10 +110,10 @@ export function installSriRuntime(
     const origAppend = (Node as any)?.prototype?.appendChild;
     if (origAppend) {
       (Node as any).prototype.appendChild = function (node: any) {
-        const r = origAppend.call(this, node);
         try {
-          maybeSetIntegrity(node);
+          prepareForInsertion(node);
         } catch {}
+        const r = origAppend.apply(this, arguments as any);
         return r;
       };
     }
@@ -106,33 +121,83 @@ export function installSriRuntime(
     const origInsert = (Node as any)?.prototype?.insertBefore;
     if (origInsert) {
       (Node as any).prototype.insertBefore = function (node: any, ref: any) {
-        const r = origInsert.call(this, node, ref);
         try {
-          maybeSetIntegrity(node);
+          prepareForInsertion(node);
         } catch {}
-        return r;
+        return origInsert.apply(this, arguments as any);
+      };
+    }
+
+    const origReplace = (Node as any)?.prototype?.replaceChild;
+    if (origReplace) {
+      (Node as any).prototype.replaceChild = function (newChild: any, oldChild: any) {
+        try {
+          prepareForInsertion(newChild);
+        } catch {}
+        return origReplace.apply(this, arguments as any);
       };
     }
 
     const origAppendEl = (Element as any)?.prototype?.append;
     if (origAppendEl) {
       (Element as any).prototype.append = function (...nodes: any[]) {
-        const r = origAppendEl.apply(this, nodes);
         try {
-          nodes.forEach((n) => maybeSetIntegrity(n));
+          prepareNodesForInsertion(nodes);
         } catch {}
-        return r;
+        return origAppendEl.apply(this, arguments as any);
       };
     }
 
     const origPrepend = (Element as any)?.prototype?.prepend;
     if (origPrepend) {
       (Element as any).prototype.prepend = function (...nodes: any[]) {
-        const r = origPrepend.apply(this, nodes);
         try {
-          nodes.forEach((n) => maybeSetIntegrity(n));
+          prepareNodesForInsertion(nodes);
         } catch {}
-        return r;
+        return origPrepend.apply(this, arguments as any);
+      };
+    }
+
+    const origBefore = (Element as any)?.prototype?.before;
+    if (origBefore) {
+      (Element as any).prototype.before = function (...nodes: any[]) {
+        try {
+          prepareNodesForInsertion(nodes);
+        } catch {}
+        return origBefore.apply(this, arguments as any);
+      };
+    }
+
+    const origAfter = (Element as any)?.prototype?.after;
+    if (origAfter) {
+      (Element as any).prototype.after = function (...nodes: any[]) {
+        try {
+          prepareNodesForInsertion(nodes);
+        } catch {}
+        return origAfter.apply(this, arguments as any);
+      };
+    }
+
+    const origReplaceWith = (Element as any)?.prototype?.replaceWith;
+    if (origReplaceWith) {
+      (Element as any).prototype.replaceWith = function (...nodes: any[]) {
+        try {
+          prepareNodesForInsertion(nodes);
+        } catch {}
+        return origReplaceWith.apply(this, arguments as any);
+      };
+    }
+
+    const origInsertAdjacentElement = (Element as any)?.prototype?.insertAdjacentElement;
+    if (origInsertAdjacentElement) {
+      (Element as any).prototype.insertAdjacentElement = function (
+        position: string,
+        element: any
+      ) {
+        try {
+          prepareForInsertion(element);
+        } catch {}
+        return origInsertAdjacentElement.apply(this, arguments as any);
       };
     }
   } catch {}
