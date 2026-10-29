@@ -32,25 +32,29 @@ function shiftMapAsset(asset: OutputAsset, lines: number): void {
 }
 
 function shiftInlineSourceMap(code: string, lines: number): string {
-  const inlineMapComment =
-    /(\/\/[#@]\s*sourceMappingURL\s*=\s*|\/\*[#@]\s*sourceMappingURL\s*=\s*)(data:application\/json[^,\s]*;base64,)([A-Za-z0-9+/=_-]+)/;
+  const trailingInlineMapComment =
+    /(\/\/[#@]\s*sourceMappingURL\s*=\s*|\/\*[#@]\s*sourceMappingURL\s*=\s*)(data:application\/json[^,\s]*;base64,)([A-Za-z0-9+/=_-]+)(?:\s*\*\/)?\s*$/;
+  const match = code.match(trailingInlineMapComment);
+  if (!match || match.index === undefined) return code;
 
-  return code.replace(
-    inlineMapComment,
-    (comment, start, dataUrl, encodedMap) => {
-      try {
-        const map = JSON.parse(
-          Buffer.from(encodedMap, "base64").toString("utf8"),
-        ) as unknown;
-        if (!shiftSourceMap(map, lines)) return comment;
+  const start = match[1]!;
+  const dataUrl = match[2]!;
+  const encodedMap = match[3]!;
+  try {
+    const map = JSON.parse(
+      Buffer.from(encodedMap, "base64").toString("utf8"),
+    ) as unknown;
+    if (!shiftSourceMap(map, lines)) return code;
 
-        return `${start}${dataUrl}${Buffer.from(JSON.stringify(map)).toString("base64")}`;
-      } catch {
-        // Leave malformed or unsupported inline maps untouched.
-        return comment;
-      }
-    },
-  );
+    const suffix = match[0].slice(
+      start.length + dataUrl.length + encodedMap.length,
+    );
+    const shiftedMap = Buffer.from(JSON.stringify(map)).toString("base64");
+    return `${code.slice(0, match.index)}${start}${dataUrl}${shiftedMap}${suffix}`;
+  } catch {
+    // Leave malformed or unsupported inline maps untouched.
+    return code;
+  }
 }
 
 export function injectRuntimeAndShiftSourceMaps(

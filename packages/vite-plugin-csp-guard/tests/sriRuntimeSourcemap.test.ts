@@ -5,11 +5,57 @@ import { originalPositionFor, TraceMap } from "@jridgewell/trace-mapping";
 import { build, type Rolldown } from "vite";
 import { describe, expect, test } from "vitest";
 import vitePluginCSP from "../src";
+import { injectRuntimeAndShiftSourceMaps } from "../src/sri/injectRuntime";
 
 type OutputAsset = Rolldown.OutputAsset;
 type OutputChunk = Rolldown.OutputChunk;
 
 const marker = "distinctive-original-statement";
+
+describe("inline source map comment selection", () => {
+  test.each(["line", "block"] as const)(
+    "shifts only the final inline map comment (%s)",
+    (commentType) => {
+      const createMapUrl = (mappings: string) =>
+        `data:application/json;base64,${Buffer.from(
+          JSON.stringify({
+            version: 3,
+            sources: ["entry.js"],
+            names: [],
+            mappings,
+          }),
+        ).toString("base64")}`;
+      const decoyUrl = `//# sourceMappingURL=${createMapUrl("AAAA")}`;
+      const trailingUrl = createMapUrl("BBBB");
+      const trailingComment =
+        commentType === "block"
+          ? `/*# sourceMappingURL=${trailingUrl} */`
+          : `//# sourceMappingURL=${trailingUrl}`;
+      const chunk = {
+        fileName: "entry.js",
+        code: `const decoy = ${JSON.stringify(decoyUrl)};\n${trailingComment}\n \t`,
+        map: null,
+      } as unknown as Rolldown.OutputChunk;
+      const bundle = {
+        "entry.js": chunk,
+      } as unknown as Rolldown.OutputBundle;
+
+      injectRuntimeAndShiftSourceMaps(chunk, bundle, "runtime();\n");
+
+      expect(chunk.code).toContain(
+        `const decoy = ${JSON.stringify(decoyUrl)};`,
+      );
+      const trailingMap = chunk.code.match(
+        /data:application\/json;base64,([A-Za-z0-9+/=]+)(?:\s*\*\/)?\s*$/,
+      );
+      expect(trailingMap).not.toBeNull();
+      const shiftedMap = JSON.parse(
+        Buffer.from(trailingMap![1]!, "base64").toString("utf8"),
+      );
+      expect(shiftedMap.mappings).toBe(";BBBB");
+    },
+  );
+});
 
 async function buildFixture(sourcemap: true | "hidden" | "inline") {
   const root = await mkdtemp(join(process.cwd(), ".tmp-csp-sourcemap-"));
