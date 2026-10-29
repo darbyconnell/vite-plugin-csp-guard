@@ -314,7 +314,9 @@ export default function vitePluginCSP(
             });
           }
 
-          const dynamicChunkFiles = analyzeDynamicImports(rollupBundle, debug);
+          const dynamicChunkFiles = sriConfig.preloadDynamicChunks
+            ? analyzeDynamicImports(rollupBundle, debug)
+            : new Set<string>();
 
           // 3. Process HTML assets: add SRI to elements, inject modulepreload links
           for (const [fileName, item] of Object.entries(bundle)) {
