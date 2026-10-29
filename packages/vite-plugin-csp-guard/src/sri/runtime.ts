@@ -126,8 +126,7 @@ export function installSriRuntime(
         } catch {}
         if (isConnected) {
           try {
-            const incomingValue = `${value}`;
-            arguments[1] = incomingValue;
+            const incomingValue = String(value);
             if (n === "src" || n === "href") {
               maybeSetIntegrity(this, {
                 url: incomingValue,
