@@ -53,6 +53,28 @@ export function installSriRuntime(
       }
     };
 
+    const registryKey = Symbol.for("vite-plugin-csp-guard.sri");
+    const runtimeGlobal = globalThis as any;
+    const registry =
+      runtimeGlobal[registryKey] ||
+      (runtimeGlobal[registryKey] = {
+        lookups: [],
+        owned: new WeakMap<any, string>(),
+        patched: false,
+      });
+    registry.lookups.push((el: any, url: string | null, overrides: any) => {
+      if (!url || shouldSkip(el, overrides)) return;
+      const integrity = getIntegrity(url);
+      return integrity ? { integrity, crossorigin: cors } : undefined;
+    });
+    if (registry.patched) return;
+    registry.patched = true;
+
+    const installedIntegrities = registry.owned;
+    const elementPrototype = (Element as any)?.prototype;
+    const origSetAttr = elementPrototype?.setAttribute;
+    const origRemoveAttr = elementPrototype?.removeAttribute;
+
     const maybeSetIntegrity = (
       el: any,
       overrides?: {
@@ -68,35 +90,75 @@ export function installSriRuntime(
       const isLink = isHtmlElement && el.localName === "link";
       const isScript = isHtmlElement && el.localName === "script";
       if (!isLink && !isScript) return;
-      if (shouldSkip(el, overrides)) return;
 
       let url: string | null = null;
+      let isEligible = true;
       if (isLink) {
-        const rel = (overrides?.rel !== undefined ? overrides.rel : el.rel || "").toLowerCase();
+        const relTokens = (overrides?.rel !== undefined ? overrides.rel : el.rel || "")
+          .toLowerCase()
+          .split(/\s+/)
+          .filter(Boolean);
         const as =
           (overrides?.as !== undefined ? overrides.as : el.getAttribute?.("as") || "").toLowerCase();
-        const ok =
-          rel === "stylesheet" ||
-          rel === "modulepreload" ||
-          (rel === "preload" && ["script", "style", "font"].includes(as));
-        if (!ok) return;
-        url =
-          overrides?.urlAttribute === "href"
-            ? overrides.url || null
-            : el.getAttribute?.("href");
+        isEligible =
+          relTokens.includes("stylesheet") ||
+          relTokens.includes("modulepreload") ||
+          (relTokens.includes("preload") && ["script", "style", "font"].includes(as));
+        if (isEligible) {
+          url =
+            overrides?.urlAttribute === "href"
+              ? overrides.url || null
+              : el.getAttribute?.("href");
+        }
       } else {
         url =
           overrides?.urlAttribute === "src"
             ? overrides.url || null
             : el.getAttribute?.("src");
       }
-      if (!url) return;
 
-      const integrity = getIntegrity(url);
-      if (!integrity || !el.setAttribute) return;
-      if (!el.hasAttribute("integrity")) el.setAttribute("integrity", integrity);
-      if (cors && !el.hasAttribute("crossorigin"))
-        el.setAttribute("crossorigin", cors);
+      let desired: { integrity: string; crossorigin?: string } | undefined;
+      if (isEligible && url) {
+        for (const lookup of registry.lookups) {
+          try {
+            const match = lookup(el, url, overrides);
+            if (match?.integrity) {
+              desired = match;
+              break;
+            }
+          } catch {}
+        }
+      }
+      const desiredIntegrity = desired?.integrity;
+      const current = el.getAttribute?.("integrity") ?? null;
+      const installed = installedIntegrities.get(el);
+      const isRuntimeOwned = installed !== undefined && current === installed;
+
+      if (isRuntimeOwned) {
+        if (desiredIntegrity) {
+          if (desiredIntegrity !== current)
+            origSetAttr?.call(el, "integrity", desiredIntegrity);
+          installedIntegrities.set(el, desiredIntegrity);
+        } else {
+          origRemoveAttr?.call(el, "integrity");
+          installedIntegrities.delete(el);
+        }
+      } else {
+        if (installed !== undefined) installedIntegrities.delete(el);
+        if (current === null && desiredIntegrity && origSetAttr) {
+          origSetAttr.call(el, "integrity", desiredIntegrity);
+          installedIntegrities.set(el, desiredIntegrity);
+        }
+      }
+
+      // Keep crossorigin when clearing a hash: changing it can refetch connected stylesheets and is harmless on asset-origin resources.
+      if (
+        desired?.crossorigin &&
+        !el.hasAttribute("crossorigin") &&
+        origSetAttr
+      ) {
+        origSetAttr.call(el, "crossorigin", desired.crossorigin);
+      }
     };
 
     // Set SRI before insertion, when the browser starts fetching the resource.
@@ -115,7 +177,6 @@ export function installSriRuntime(
       for (const node of nodes) prepareForInsertion(node);
     };
 
-    const origSetAttr = (Element as any)?.prototype?.setAttribute;
     if (origSetAttr) {
       (Element as any).prototype.setAttribute = function (name: string, value: string) {
         const n = String(name || "").toLowerCase();
@@ -146,13 +207,80 @@ export function installSriRuntime(
           } catch {}
         }
 
-        const r = origSetAttr.apply(this, arguments as any);
         try {
-          maybeSetIntegrity(this);
-        } catch {}
-        return r;
+          return origSetAttr.apply(this, arguments as any);
+        } finally {
+          try {
+            maybeSetIntegrity(this);
+          } catch {}
+        }
       };
     }
+
+    const patchPropertySetter = (
+      prototype: any,
+      property: string,
+      getOverrides: (value: string) => {
+        url?: string | null;
+        rel?: string;
+        as?: string;
+        urlAttribute?: "src" | "href";
+      }
+    ) => {
+      try {
+        if (!prototype) return;
+        const descriptor = Object.getOwnPropertyDescriptor(prototype, property);
+        if (
+          !descriptor ||
+          !descriptor.configurable ||
+          typeof descriptor.set !== "function"
+        )
+          return;
+
+        Object.defineProperty(prototype, property, {
+          configurable: descriptor.configurable,
+          enumerable: descriptor.enumerable,
+          get: descriptor.get
+            ? function (this: any) {
+                return descriptor.get!.call(this);
+              }
+            : undefined,
+          set: function (this: any, value: any) {
+            try {
+              maybeSetIntegrity(this, getOverrides(String(value)));
+            } catch {}
+            try {
+              return descriptor.set!.call(this, value);
+            } finally {
+              try {
+                maybeSetIntegrity(this);
+              } catch {}
+            }
+          },
+        });
+      } catch {}
+    };
+
+    patchPropertySetter(
+      (globalThis as any).HTMLLinkElement?.prototype,
+      "href",
+      (url) => ({ url, urlAttribute: "href" })
+    );
+    patchPropertySetter(
+      (globalThis as any).HTMLLinkElement?.prototype,
+      "rel",
+      (rel) => ({ rel })
+    );
+    patchPropertySetter(
+      (globalThis as any).HTMLLinkElement?.prototype,
+      "as",
+      (as) => ({ as })
+    );
+    patchPropertySetter(
+      (globalThis as any).HTMLScriptElement?.prototype,
+      "src",
+      (url) => ({ url, urlAttribute: "src" })
+    );
 
     const origAppend = (Node as any)?.prototype?.appendChild;
     if (origAppend) {
@@ -197,7 +325,6 @@ export function installSriRuntime(
       }
     };
 
-    const elementPrototype = (Element as any)?.prototype;
     patchVariadicInsertion(elementPrototype, "append");
     patchVariadicInsertion(elementPrototype, "prepend");
     patchVariadicInsertion(elementPrototype, "before");

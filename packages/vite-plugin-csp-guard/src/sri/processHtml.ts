@@ -132,12 +132,15 @@ export function processHtmlForSri(
   // Add integrity to existing link[href] (stylesheet, modulepreload, preload)
   $("link[href]").each((_, el) => {
     if (shouldSkip(el, skipResources)) return;
-    const rel = $(el).attr("rel")?.toLowerCase();
+    const relTokens = ($(el).attr("rel") || "")
+      .toLowerCase()
+      .split(/\s+/)
+      .filter(Boolean);
     const as = $(el).attr("as")?.toLowerCase();
     const eligible =
-      rel === "stylesheet" ||
-      rel === "modulepreload" ||
-      (rel === "preload" && ["script", "style", "font"].includes(as || ""));
+      relTokens.includes("stylesheet") ||
+      relTokens.includes("modulepreload") ||
+      (relTokens.includes("preload") && ["script", "style", "font"].includes(as || ""));
     if (!eligible) return;
     const href = $(el).attr("href");
     const integrity = href
