@@ -8,11 +8,7 @@ export function installSriRuntime(
 ) {
   try {
     const map = new Map(Object.entries(sriByPathname || {}));
-    const installedIntegrities = new WeakMap<any, string>();
     const cors = opts?.crossorigin;
-    const elementPrototype = (Element as any)?.prototype;
-    const origSetAttr = elementPrototype?.setAttribute;
-    const origRemoveAttr = elementPrototype?.removeAttribute;
     const skipMatchers = (opts?.skipResources || [])
       .filter((pattern) => !!pattern)
       .map((pattern) => {
@@ -51,6 +47,28 @@ export function installSriRuntime(
       }
     };
 
+    const registryKey = Symbol.for("vite-plugin-csp-guard.sri");
+    const runtimeGlobal = globalThis as any;
+    const registry =
+      runtimeGlobal[registryKey] ||
+      (runtimeGlobal[registryKey] = {
+        lookups: [],
+        owned: new WeakMap<any, string>(),
+        patched: false,
+      });
+    registry.lookups.push((el: any, url: string | null, overrides: any) => {
+      if (!url || shouldSkip(el, overrides)) return;
+      const integrity = getIntegrity(url);
+      return integrity ? { integrity, crossorigin: cors } : undefined;
+    });
+    if (registry.patched) return;
+    registry.patched = true;
+
+    const installedIntegrities = registry.owned;
+    const elementPrototype = (Element as any)?.prototype;
+    const origSetAttr = elementPrototype?.setAttribute;
+    const origRemoveAttr = elementPrototype?.removeAttribute;
+
     const maybeSetIntegrity = (
       el: any,
       overrides?: {
@@ -70,13 +88,16 @@ export function installSriRuntime(
       let url: string | null = null;
       let isEligible = true;
       if (isLink) {
-        const rel = (overrides?.rel !== undefined ? overrides.rel : el.rel || "").toLowerCase();
+        const relTokens = (overrides?.rel !== undefined ? overrides.rel : el.rel || "")
+          .toLowerCase()
+          .split(/\s+/)
+          .filter(Boolean);
         const as =
           (overrides?.as !== undefined ? overrides.as : el.getAttribute?.("as") || "").toLowerCase();
         isEligible =
-          rel === "stylesheet" ||
-          rel === "modulepreload" ||
-          (rel === "preload" && ["script", "style", "font"].includes(as));
+          relTokens.includes("stylesheet") ||
+          relTokens.includes("modulepreload") ||
+          (relTokens.includes("preload") && ["script", "style", "font"].includes(as));
         if (isEligible) {
           url =
             overrides?.urlAttribute === "href"
@@ -90,33 +111,47 @@ export function installSriRuntime(
             : el.getAttribute?.("src");
       }
 
-      const desired =
-        isEligible && !shouldSkip(el, overrides) && url
-          ? getIntegrity(url)
-          : undefined;
+      let desired: { integrity: string; crossorigin?: string } | undefined;
+      if (isEligible && url) {
+        for (const lookup of registry.lookups) {
+          try {
+            const match = lookup(el, url, overrides);
+            if (match?.integrity) {
+              desired = match;
+              break;
+            }
+          } catch {}
+        }
+      }
+      const desiredIntegrity = desired?.integrity;
       const current = el.getAttribute?.("integrity") ?? null;
       const installed = installedIntegrities.get(el);
       const isRuntimeOwned = installed !== undefined && current === installed;
 
       if (isRuntimeOwned) {
-        if (desired) {
-          if (desired !== current) origSetAttr?.call(el, "integrity", desired);
-          installedIntegrities.set(el, desired);
+        if (desiredIntegrity) {
+          if (desiredIntegrity !== current)
+            origSetAttr?.call(el, "integrity", desiredIntegrity);
+          installedIntegrities.set(el, desiredIntegrity);
         } else {
           origRemoveAttr?.call(el, "integrity");
           installedIntegrities.delete(el);
         }
       } else {
         if (installed !== undefined) installedIntegrities.delete(el);
-        if (current === null && desired && origSetAttr) {
-          origSetAttr.call(el, "integrity", desired);
-          installedIntegrities.set(el, desired);
+        if (current === null && desiredIntegrity && origSetAttr) {
+          origSetAttr.call(el, "integrity", desiredIntegrity);
+          installedIntegrities.set(el, desiredIntegrity);
         }
       }
 
       // Keep crossorigin when clearing a hash: changing it can refetch connected stylesheets and is harmless on asset-origin resources.
-      if (desired && cors && !el.hasAttribute("crossorigin") && origSetAttr) {
-        origSetAttr.call(el, "crossorigin", cors);
+      if (
+        desired?.crossorigin &&
+        !el.hasAttribute("crossorigin") &&
+        origSetAttr
+      ) {
+        origSetAttr.call(el, "crossorigin", desired.crossorigin);
       }
     };
 
@@ -166,11 +201,13 @@ export function installSriRuntime(
           } catch {}
         }
 
-        const r = origSetAttr.apply(this, arguments as any);
         try {
-          maybeSetIntegrity(this);
-        } catch {}
-        return r;
+          return origSetAttr.apply(this, arguments as any);
+        } finally {
+          try {
+            maybeSetIntegrity(this);
+          } catch {}
+        }
       };
     }
 
@@ -206,11 +243,13 @@ export function installSriRuntime(
             try {
               maybeSetIntegrity(this, getOverrides(String(value)));
             } catch {}
-            const result = descriptor.set!.call(this, value);
             try {
-              maybeSetIntegrity(this);
-            } catch {}
-            return result;
+              return descriptor.set!.call(this, value);
+            } finally {
+              try {
+                maybeSetIntegrity(this);
+              } catch {}
+            }
           },
         });
       } catch {}
