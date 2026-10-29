@@ -270,11 +270,11 @@ export default function vitePluginCSP(
           // 1. Build initial integrity map (for non-entry chunks and assets)
           let sriByPathname = buildIntegrityMappings(rollupBundle, algorithm, debug);
           const base = resolvedConfig?.base ?? "/";
-          const baseNorm = base.endsWith("/") ? base.slice(0, -1) : base;
 
           // 2. Inject each entry's reachable-file map before hashing for HTML.
           if (sriConfig.runtimePatchDynamicLinks) {
             const runtime = installSriRuntime.toString();
+            const relativeBase = base === "./" || base === "";
             for (const [fileName, chunk] of Object.entries(bundle)) {
               if (chunk.type !== "chunk" || !chunk.isEntry || !chunk.code) {
                 continue;
@@ -291,10 +291,22 @@ export default function vitePluginCSP(
                 if (integrity) entryMap[`/${file}`] = integrity;
               }
               const map = JSON.stringify(withBasePathname(entryMap, base));
+              // A relative base can be deployed under any path, so resolve the
+              // map against the entry chunk's own URL at runtime.
+              let options = sriRuntimeOptions;
+              if (relativeBase) {
+                const root =
+                  _options.format === "es"
+                    ? `new URL(${JSON.stringify(
+                        "../".repeat((fileName.match(/\//g) || []).length) || "./",
+                      )}, import.meta.url).href`
+                    : `typeof document !== "undefined" ? document.baseURI : undefined`;
+                options = `${sriRuntimeOptions.slice(0, -1)},root:${root}}`;
+              }
               injectRuntimeAndShiftSourceMaps(
                 chunk as unknown as OutputChunk,
                 rollupBundle,
-                `(${runtime})(${map},${sriRuntimeOptions});\n`,
+                `(${runtime})(${map},${options});\n`,
               );
               if (debug) {
                 console.log(`[SRI] Injected runtime into entry: ${fileName}`);
@@ -343,11 +355,12 @@ export default function vitePluginCSP(
               html,
               sriByPathname,
               dynamicChunkFiles,
-              baseNorm,
+              base,
               sriConfig.crossorigin,
               sriConfig.skipResources,
               debug,
               hashReplacements,
+              fileName,
             );
 
             htmlAssets.push({ asset, html: processed });

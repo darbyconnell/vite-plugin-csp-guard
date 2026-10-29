@@ -14,8 +14,10 @@ describe("processHtmlForSri dynamic modulepreload URLs", () => {
       "//cdn.example.com/app/assets/lazy.js",
     ],
     ["path", "/app", "/app/assets/lazy.js"],
-    ["relative path", ".", "./assets/lazy.js"],
-    ["empty base", "", "/assets/lazy.js"],
+    ["path with trailing slash", "/app/", "/app/assets/lazy.js"],
+    ["root", "/", "/assets/lazy.js"],
+    ["relative", "./", "./assets/lazy.js"],
+    ["empty (relative)", "", "./assets/lazy.js"],
   ])(
     "joins a %s base without changing its URL form",
     (_description, base, expectedHref) => {
@@ -50,7 +52,7 @@ describe("processHtmlForSri dynamic modulepreload URLs", () => {
         "/assets/other.js": "sha384-other",
       },
       new Set(["assets/page.js", "assets/other.js"]),
-      "",
+      "/",
       undefined,
       ["/assets/page.js"]
     );
@@ -66,7 +68,7 @@ describe("processHtmlForSri dynamic modulepreload URLs", () => {
       "<html><head></head><body></body></html>",
       { "/assets/page.js": "sha384-page" },
       new Set(["assets/page.js"]),
-      "",
+      "/",
       undefined,
       ["*page*"]
     );
@@ -100,7 +102,7 @@ describe("processHtmlForSri dynamic modulepreload URLs", () => {
         "/assets/other.js": "sha384-other",
       },
       new Set(),
-      "",
+      "/",
       undefined,
       ["/assets/page.js"]
     );

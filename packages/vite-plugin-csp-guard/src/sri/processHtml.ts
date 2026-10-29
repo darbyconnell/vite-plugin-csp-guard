@@ -1,4 +1,5 @@
 import * as cheerio from "cheerio";
+import * as path from "path";
 
 /**
  * Pathname part of Vite's `base`, without a trailing slash: "/app/" -> "/app",
@@ -33,11 +34,15 @@ export function withBasePathname(
 
 function getIntegrityForUrl(
   url: string,
-  sriByPathname: Record<string, string>
+  sriByPathname: Record<string, string>,
+  htmlFileName?: string
 ): string | undefined {
   if (!url) return undefined;
   try {
-    const parsed = new URL(url, "http://localhost");
+    const parsed = new URL(
+      url,
+      htmlFileName ? `http://localhost/${htmlFileName}` : "http://localhost"
+    );
     return sriByPathname[parsed.pathname];
   } catch {
     return sriByPathname[url] || sriByPathname[`/${url}`];
@@ -81,7 +86,8 @@ export function processHtmlForSri(
   skipResources: string[] = [],
   debug: boolean = false,
   /** Replace provisional CSP hashes with hashes of the final chunk code. */
-  hashReplacements?: { old: string; new: string }[]
+  hashReplacements?: { old: string; new: string }[],
+  htmlFileName?: string
 ): string {
   const $ = cheerio.load(html);
   const sriByBasePathname = withBasePathname(sriByPathname, base);
@@ -115,7 +121,7 @@ export function processHtmlForSri(
     if (shouldSkip(el, skipResources)) return;
     const src = $(el).attr("src");
     const integrity = src
-      ? getIntegrityForUrl(src, sriByBasePathname)
+      ? getIntegrityForUrl(src, sriByBasePathname, htmlFileName)
       : undefined;
     if (integrity) {
       $(el).attr("integrity", integrity);
@@ -135,7 +141,7 @@ export function processHtmlForSri(
     if (!eligible) return;
     const href = $(el).attr("href");
     const integrity = href
-      ? getIntegrityForUrl(href, sriByBasePathname)
+      ? getIntegrityForUrl(href, sriByBasePathname, htmlFileName)
       : undefined;
     // Always overwrite when we have a match
     if (integrity) {
@@ -153,8 +159,17 @@ export function processHtmlForSri(
 
   const preloads: string[] = [];
   for (const chunkFile of dynamicChunkFiles) {
-    const normalizedBase = base.replace(/\/+$/, "");
-    const href = normalizedBase ? `${normalizedBase}/${chunkFile}` : `/${chunkFile}`;
+    let href: string;
+    if (base === "./" || base === "") {
+      const relativePath = path.posix.relative(
+        path.posix.dirname(htmlFileName || "."),
+        chunkFile
+      );
+      href = relativePath.startsWith("../") ? relativePath : `./${relativePath}`;
+    } else {
+      const normalizedBase = base.replace(/\/+$/, "");
+      href = normalizedBase ? `${normalizedBase}/${chunkFile}` : `/${chunkFile}`;
+    }
     if (skipResources.some((pattern) => matchesPattern(pattern, href))) continue;
     if (existingHrefs.has(href)) continue;
     const pathname = `/${chunkFile}`;

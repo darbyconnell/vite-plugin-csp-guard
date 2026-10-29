@@ -4,10 +4,16 @@
  */
 export function installSriRuntime(
   sriByPathname: Record<string, string>,
-  opts?: { crossorigin?: string; skipResources?: string[] }
+  opts?: { crossorigin?: string; skipResources?: string[]; root?: string }
 ) {
   try {
-    const map = new Map(Object.entries(sriByPathname || {}));
+    const map = new Map<string, string>();
+    for (const [key, integrity] of Object.entries(sriByPathname || {})) {
+      map.set(
+        opts?.root ? new URL(key.slice(1), opts.root).pathname : key,
+        integrity
+      );
+    }
     const cors = opts?.crossorigin;
     const skipMatchers = (opts?.skipResources || [])
       .filter((pattern) => !!pattern)
