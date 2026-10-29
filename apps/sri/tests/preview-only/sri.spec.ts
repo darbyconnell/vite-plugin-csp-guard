@@ -79,6 +79,59 @@ test.describe("SRI integrity", () => {
     expect(result.integrity).toMatch(/^sha256-/);
   });
 
+  test("Property-built third-party scripts are not given local integrity", async ({ page }) => {
+    // This app's CSP intentionally allows scripts only from 'self'. Remove that
+    // policy for this test so the browser can exercise the runtime's SRI matching.
+    await page.route("**/", async (route) => {
+      if (!route.request().isNavigationRequest()) return route.continue();
+      const response = await route.fetch();
+      const html = await response.text();
+      await route.fulfill({
+        response,
+        body: html.replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/i, ""),
+      });
+    });
+    await page.goto("/");
+
+    const chunkHref = await page
+      .locator('link[rel="modulepreload"][href*="/assets/"]')
+      .first()
+      .getAttribute("href");
+    expect(chunkHref).not.toBeNull();
+
+    const chunkPathname = new URL(chunkHref!, page.url()).pathname;
+    const thirdPartyUrl = `https://third-party.example${chunkPathname}`;
+    await page.route(thirdPartyUrl, (route) =>
+      route.fulfill({
+        contentType: "application/javascript",
+        body: "window.__sriThirdPartyScriptLoaded = true;",
+      }),
+    );
+
+    const result = await page.evaluate(async (src) => {
+      (window as any).__sriThirdPartyScriptLoaded = false;
+      const script = document.createElement("script");
+      script.src = src;
+      const outcome = await new Promise<"load" | "error" | "timeout">((resolve) => {
+        script.onload = () => resolve("load");
+        script.onerror = () => resolve("error");
+        window.setTimeout(() => resolve("timeout"), 5000);
+        document.head.appendChild(script);
+      });
+      return {
+        outcome,
+        integrity: script.getAttribute("integrity"),
+        crossorigin: script.getAttribute("crossorigin"),
+        executed: (window as any).__sriThirdPartyScriptLoaded,
+      };
+    }, thirdPartyUrl);
+
+    expect(result.integrity).toBeNull();
+    expect(result.crossorigin).toBeNull();
+    expect(result.outcome).toBe("load");
+    expect(result.executed).toBe(true);
+  });
+
   test("Property-built scripts are checked before they are inserted", async ({ page }) => {
     await page.goto("/");
 

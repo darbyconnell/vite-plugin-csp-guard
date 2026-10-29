@@ -4,6 +4,7 @@ import * as path from "path";
 function getIntegrityForUrl(
   url: string,
   sriByPathname: Record<string, string>,
+  base: string,
   htmlFileName?: string
 ): string | undefined {
   if (!url) return undefined;
@@ -12,9 +13,52 @@ function getIntegrityForUrl(
       url,
       htmlFileName ? `http://localhost/${htmlFileName}` : "http://localhost"
     );
+
+    let assetOrigin: { origin: string; host: string; protocolRelative: boolean } | undefined;
+    try {
+      if (base.startsWith("//")) {
+        const baseUrl = new URL(`http:${base}`);
+        assetOrigin = {
+          origin: baseUrl.origin,
+          host: baseUrl.host,
+          protocolRelative: true,
+        };
+      } else if (/^[a-z][a-z\d+.-]*:\/\//i.test(base)) {
+        const baseUrl = new URL(base);
+        if (baseUrl.origin !== "null") {
+          assetOrigin = {
+            origin: baseUrl.origin,
+            host: baseUrl.host,
+            protocolRelative: false,
+          };
+        }
+      }
+    } catch {
+      // Path and relative bases have no asset origin at build time.
+    }
+
+    if (assetOrigin) {
+      if (assetOrigin.protocolRelative) {
+        if (
+          (parsed.protocol !== "http:" && parsed.protocol !== "https:") ||
+          parsed.host !== assetOrigin.host
+        ) {
+          return undefined;
+        }
+      } else if (parsed.origin !== assetOrigin.origin) {
+        return undefined;
+      }
+    } else if (
+      parsed.origin !== "http://localhost" ||
+      /^[a-z][a-z\d+.-]*:/i.test(url) ||
+      url.startsWith("//")
+    ) {
+      return undefined;
+    }
+
     return sriByPathname[parsed.pathname];
   } catch {
-    return sriByPathname[url] || sriByPathname[`/${url}`];
+    return undefined;
   }
 }
 
@@ -83,7 +127,7 @@ export function processHtmlForSri(
     if (shouldSkip(el, skipResources)) return;
     const src = $(el).attr("src");
     const integrity = src
-      ? getIntegrityForUrl(src, sriByPathname, htmlFileName)
+      ? getIntegrityForUrl(src, sriByPathname, base, htmlFileName)
       : undefined;
     if (integrity) {
       $(el).attr("integrity", integrity);
@@ -103,7 +147,7 @@ export function processHtmlForSri(
     if (!eligible) return;
     const href = $(el).attr("href");
     const integrity = href
-      ? getIntegrityForUrl(href, sriByPathname, htmlFileName)
+      ? getIntegrityForUrl(href, sriByPathname, base, htmlFileName)
       : undefined;
     // Always overwrite when we have a match
     if (integrity) {

@@ -268,6 +268,13 @@ export default function vitePluginCSP(
             const skip = JSON.stringify(sriConfig.skipResources);
             const relativeBase =
               resolvedConfig?.base === "./" || resolvedConfig?.base === "";
+            const configuredBase = resolvedConfig?.base ?? "/";
+            const hasAssetOrigin =
+              configuredBase.startsWith("//") ||
+              /^[a-z][a-z\d+.-]*:\/\//i.test(configuredBase);
+            const assetBaseOption = hasAssetOrigin
+              ? `,assetBase:${JSON.stringify(configuredBase)}`
+              : "";
 
             for (const [fileName, item] of Object.entries(bundle)) {
               if (item.type !== "chunk") continue;
@@ -284,7 +291,7 @@ export default function vitePluginCSP(
                     : `typeof document !== "undefined" ? document.baseURI : undefined`;
                 rootOption = `,root:${root}`;
               }
-              const injected = `\n(${installSriRuntime.toString()})(${serializedMap},{crossorigin:${cors},skipResources:${skip}${rootOption}});\n`;
+              const injected = `\n(${installSriRuntime.toString()})(${serializedMap},{crossorigin:${cors},skipResources:${skip}${rootOption}${assetBaseOption}});\n`;
               chunk.code = injected + chunk.code;
               if (debug) {
                 console.log(`[SRI] Injected runtime into entry: ${fileName}`);

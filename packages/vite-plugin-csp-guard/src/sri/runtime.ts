@@ -4,9 +4,20 @@
  */
 export function installSriRuntime(
   sriByPathname: Record<string, string>,
-  opts?: { crossorigin?: string; skipResources?: string[]; root?: string }
+  opts?: {
+    crossorigin?: string;
+    skipResources?: string[];
+    root?: string;
+    assetBase?: string;
+  }
 ) {
   try {
+    const locationHref = (globalThis as any).location?.href || "";
+    const assetOrigin = opts?.assetBase
+      ? new URL(opts.assetBase, locationHref).origin
+      : opts?.root
+        ? new URL(opts.root).origin
+        : (globalThis as any).location?.origin;
     const map = new Map<string, string>();
     for (const [key, integrity] of Object.entries(sriByPathname || {})) {
       map.set(
@@ -46,7 +57,8 @@ export function installSriRuntime(
     const getIntegrity = (url: string | null) => {
       if (!url) return;
       try {
-        const u = new URL(url, (globalThis as any).location?.href || "");
+        const u = new URL(url, locationHref);
+        if (u.origin !== assetOrigin) return undefined;
         return map.get(u.pathname);
       } catch {
         return undefined;
