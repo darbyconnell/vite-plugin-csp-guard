@@ -132,6 +132,30 @@ test.describe("SRI integrity", () => {
     expect(result.executed).toBe(true);
   });
 
+  test("Relative URLs use the current document base after pushState", async ({ page }) => {
+    await page.goto("/");
+
+    const chunkHref = await page
+      .locator('link[rel="modulepreload"][href*="/assets/"]')
+      .first()
+      .getAttribute("href");
+    expect(chunkHref).not.toBeNull();
+    const chunkName = new URL(chunkHref!, page.url()).pathname.split("/").pop();
+
+    const result = await page.evaluate((assetName) => {
+      history.pushState({}, "", "/nested/");
+      const script = document.createElement("script");
+      script.setAttribute("src", `assets/${assetName}`);
+      return {
+        baseURI: document.baseURI,
+        integrity: script.getAttribute("integrity"),
+      };
+    }, chunkName);
+
+    expect(result.baseURI).toBe(`${new URL(page.url()).origin}/nested/`);
+    expect(result.integrity).toBeNull();
+  });
+
   test("Property-built scripts are checked before they are inserted", async ({ page }) => {
     await page.goto("/");
 

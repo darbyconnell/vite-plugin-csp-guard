@@ -12,12 +12,23 @@ export function installSriRuntime(
   }
 ) {
   try {
-    const locationHref = (globalThis as any).location?.href || "";
-    const assetOrigin = opts?.assetBase
-      ? new URL(opts.assetBase, locationHref).origin
-      : opts?.root
-        ? new URL(opts.root).origin
-        : (globalThis as any).location?.origin;
+    const location = (globalThis as any).location;
+    let assetOrigin = location?.origin;
+    try {
+      const documentBase =
+        (globalThis as any).document?.baseURI || location?.href || "";
+      const configuredOrigin = opts?.assetBase
+        ? new URL(opts.assetBase, documentBase).origin
+        : opts?.root
+          ? new URL(opts.root).origin
+          : location?.origin;
+      assetOrigin =
+        configuredOrigin && configuredOrigin !== "null"
+          ? configuredOrigin
+          : location?.origin;
+    } catch {
+      assetOrigin = location?.origin;
+    }
     const map = new Map<string, string>();
     for (const [key, integrity] of Object.entries(sriByPathname || {})) {
       map.set(
@@ -57,7 +68,11 @@ export function installSriRuntime(
     const getIntegrity = (url: string | null) => {
       if (!url) return;
       try {
-        const u = new URL(url, locationHref);
+        const base =
+          (globalThis as any).document?.baseURI ||
+          (globalThis as any).location?.href ||
+          "";
+        const u = new URL(url, base);
         if (u.origin !== assetOrigin) return undefined;
         return map.get(u.pathname);
       } catch {
