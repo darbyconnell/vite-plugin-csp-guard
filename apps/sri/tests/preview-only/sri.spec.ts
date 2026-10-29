@@ -82,13 +82,13 @@ test.describe("SRI integrity", () => {
   test("Property-built scripts are checked before they are inserted", async ({ page }) => {
     await page.goto("/");
 
-    const entrySrc = await page
-      .locator('script[type="module"][src*="/assets/"]')
+    const chunkHref = await page
+      .locator('link[rel="modulepreload"][href*="/assets/"]')
       .first()
-      .getAttribute("src");
-    expect(entrySrc).not.toBeNull();
+      .getAttribute("href");
+    expect(chunkHref).not.toBeNull();
 
-    const tamperedUrl = new URL(entrySrc!, page.url());
+    const tamperedUrl = new URL(chunkHref!, page.url());
     tamperedUrl.searchParams.set("sri-regression", "script");
     await page.route(
       (url) => url.href === tamperedUrl.href,
@@ -124,13 +124,13 @@ test.describe("SRI integrity", () => {
   test("Connected script setAttribute is checked before its fetch", async ({ page }) => {
     await page.goto("/");
 
-    const entrySrc = await page
-      .locator('script[type="module"][src*="/assets/"]')
+    const chunkHref = await page
+      .locator('link[rel="modulepreload"][href*="/assets/"]')
       .first()
-      .getAttribute("src");
-    expect(entrySrc).not.toBeNull();
+      .getAttribute("href");
+    expect(chunkHref).not.toBeNull();
 
-    const tamperedUrl = new URL(entrySrc!, page.url());
+    const tamperedUrl = new URL(chunkHref!, page.url());
     tamperedUrl.searchParams.set("sri-regression", "connected-set-attribute");
     await page.route(
       (url) => url.href === tamperedUrl.href,
@@ -167,13 +167,13 @@ test.describe("SRI integrity", () => {
   test("replaceChildren checks scripts before insertion", async ({ page }) => {
     await page.goto("/");
 
-    const entrySrc = await page
-      .locator('script[type="module"][src*="/assets/"]')
+    const chunkHref = await page
+      .locator('link[rel="modulepreload"][href*="/assets/"]')
       .first()
-      .getAttribute("src");
-    expect(entrySrc).not.toBeNull();
+      .getAttribute("href");
+    expect(chunkHref).not.toBeNull();
 
-    const tamperedUrl = new URL(entrySrc!, page.url());
+    const tamperedUrl = new URL(chunkHref!, page.url());
     tamperedUrl.searchParams.set("sri-regression", "replace-children");
     await page.route(
       (url) => url.href === tamperedUrl.href,
@@ -212,7 +212,7 @@ test.describe("SRI integrity", () => {
     await page.goto("/");
 
     const stylesheetHref = await page
-      .locator('link[rel="stylesheet"][href*="/assets/"]')
+      .locator('link[rel="stylesheet"][href*="/assets/index-"][href$=".css"]')
       .first()
       .getAttribute("href");
     expect(stylesheetHref).not.toBeNull();
@@ -253,7 +253,7 @@ test.describe("SRI integrity", () => {
     await page.goto("/");
 
     const stylesheetHref = await page
-      .locator('link[rel="stylesheet"][href*="/assets/"]')
+      .locator('link[rel="stylesheet"][href*="/assets/index-"][href$=".css"]')
       .first()
       .getAttribute("href");
     expect(stylesheetHref).not.toBeNull();
