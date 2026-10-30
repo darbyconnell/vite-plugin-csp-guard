@@ -13,7 +13,8 @@ export function buildIntegrityMappings(
   const integrityMap: Record<string, string> = {};
 
   for (const [fileName, item] of Object.entries(bundle)) {
-    if (!PROCESSABLE_EXTENSIONS.test(fileName)) continue;
+    if (item.type === "asset" && !PROCESSABLE_EXTENSIONS.test(fileName))
+      continue;
 
     let source: string;
     if (item.type === "asset") {
