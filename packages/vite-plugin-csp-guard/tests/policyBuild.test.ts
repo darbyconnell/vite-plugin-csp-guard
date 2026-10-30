@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { build } from "vite";
 import { afterEach, describe, expect, test } from "vitest";
-import { definePolicy, self } from "csp-toolkit";
+import { definePolicy, self, unsafeInline } from "csp-toolkit";
 import vitePluginCSP from "../src";
 import type { MyPluginOptions } from "../src/types";
 
@@ -16,19 +16,23 @@ afterEach(async () => {
   );
 });
 
-async function buildHtml(policy: MyPluginOptions["policy"]) {
+async function buildHtml(
+  policy: MyPluginOptions["policy"],
+  body = "<script>window.__appRan = true;</script>",
+  override = true,
+) {
   const root = await mkdtemp(path.join(process.cwd(), ".tmp-csp-policy-build-"));
   tempDirectories.push(root);
   await writeFile(
     path.join(root, "index.html"),
-    `<!doctype html><html><head></head><body><script>window.__appRan = true;</script></body></html>`,
+    `<!doctype html><html><head></head><body>${body}</body></html>`,
   );
 
   await build({
     configFile: false,
     root,
     logLevel: "silent",
-    plugins: [vitePluginCSP({ policy, override: true })],
+    plugins: [vitePluginCSP({ policy, override })],
     build: {
       outDir: path.join(root, "dist"),
       emptyOutDir: true,
@@ -73,5 +77,20 @@ describe("Vite build policy generation", () => {
     expect(sources).toContain("'self'");
     expect(sources.some((source) => source.startsWith("'sha256-"))).toBe(true);
     expect(sources).not.toContain("https://parent-only.example");
+  });
+
+  test("preserves inherited unsafe-inline for script elements during a build", async () => {
+    const html = await buildHtml(
+      definePolicy({
+        scriptSrc: [self, unsafeInline],
+      }),
+      undefined,
+      false,
+    );
+
+    const sources = directiveSources(html, "script-src-elem");
+    expect(sources).toContain("'self'");
+    expect(sources).toContain("'unsafe-inline'");
+    expect(sources.some((source) => source.startsWith("'sha256-"))).toBe(false);
   });
 });

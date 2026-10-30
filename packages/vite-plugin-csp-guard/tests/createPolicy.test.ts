@@ -89,6 +89,50 @@ describe("generatePolicyString — element directive source semantics", () => {
     expect(src).toContain("'sha256-dummy'");
   });
 
+  test("keeps inherited unsafe-inline for script-src-elem without adding hashes", () => {
+    const collection = createNewCollection();
+    collection["script-src-elem"].set("sha256-dummy", {
+      algorithm: "sha256",
+      content: "",
+    });
+    const policy: DefinedPolicy = definePolicy({
+      defaultSrc: [self],
+      scriptSrcElem: [self],
+      scriptSrc: [self, unsafeInline],
+    });
+    const userPolicy: DefinedPolicy = definePolicy({
+      scriptSrc: [self, unsafeInline],
+    });
+
+    const out = generatePolicyString({ collection, policy, userPolicy });
+    const sources = directiveSources(out, "script-src-elem");
+    expect(sources).toContain(cspKeywordForm(self));
+    expect(sources).toContain(cspKeywordForm(unsafeInline));
+    expect(sources).not.toContain("'sha256-dummy'");
+  });
+
+  test("keeps inherited unsafe-inline for style-src-elem without adding hashes", () => {
+    const collection = createNewCollection();
+    collection["style-src-elem"].set("sha256-dummy", {
+      algorithm: "sha256",
+      content: "",
+    });
+    const policy: DefinedPolicy = definePolicy({
+      defaultSrc: [self],
+      styleSrcElem: [self],
+      styleSrc: [self, unsafeInline],
+    });
+    const userPolicy: DefinedPolicy = definePolicy({
+      styleSrc: [self, unsafeInline],
+    });
+
+    const out = generatePolicyString({ collection, policy, userPolicy });
+    const sources = directiveSources(out, "style-src-elem");
+    expect(sources).toContain(cspKeywordForm(self));
+    expect(sources).toContain(cspKeywordForm(unsafeInline));
+    expect(sources).not.toContain("'sha256-dummy'");
+  });
+
   test("an explicitly empty element directive does not inherit parent sources", () => {
     const collection = createNewCollection();
     collection["script-src-elem"].set("sha256-dummy", {
@@ -145,7 +189,7 @@ describe("generatePolicyString — element directive source semantics", () => {
     expect(src).toContain("'sha256-dummy'");
   });
 
-  test("does not add hashes when inherited default-src only allows unsafe-inline", () => {
+  test("inherits default-src unsafe-inline without adding hashes", () => {
     const collection = createNewCollection();
     collection["script-src-elem"].set("sha256-dummy", {
       algorithm: "sha256",
@@ -156,7 +200,9 @@ describe("generatePolicyString — element directive source semantics", () => {
     });
 
     const out = generatePolicyString({ collection, policy });
-    expect(directiveSources(out, "script-src-elem")).toEqual([]);
+    expect(directiveSources(out, "script-src-elem")).toEqual([
+      cspKeywordForm(unsafeInline),
+    ]);
   });
 
   test("does not add hashes when unsafe-inline is the only relevant source", () => {
