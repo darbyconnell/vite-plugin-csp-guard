@@ -16,7 +16,7 @@ function isRelativeBase(base: string): boolean {
 function basePathname(base: string): string {
   try {
     const pathname = new URL(base, `${FAKE_ORIGIN}/`).pathname;
-    const decoded = decodeURIComponent(pathname);
+    const decoded = decodeURI(pathname);
     return decoded.endsWith("/") ? decoded.slice(0, -1) : decoded;
   } catch {
     return "";
@@ -48,7 +48,7 @@ function sourcePathname(
       return undefined;
     }
 
-    let pathname = decodeURIComponent(resolved.pathname);
+    let pathname = decodeURI(resolved.pathname);
     const prefix = basePathname(base);
     if (prefix) {
       if (pathname !== prefix && !pathname.startsWith(`${prefix}/`)) {

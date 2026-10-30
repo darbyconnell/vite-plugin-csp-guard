@@ -175,6 +175,18 @@ describe("HTML module root discovery", () => {
       "assets/main file.js",
     ]);
   });
+
+  test("does not treat an escaped slash as a path separator", () => {
+    const nestedBundle = {
+      "assets/main/file.js": { type: "chunk", isEntry: false },
+    } as unknown as Rolldown.OutputBundle;
+    const html =
+      '<script type="module" src="/assets/main%2Ffile.js"></script>';
+
+    expect(getHtmlModuleRootChunks(html, "index.html", nestedBundle, "/")).toEqual(
+      [],
+    );
+  });
 });
 
 describe("dynamic import preload lists", () => {
