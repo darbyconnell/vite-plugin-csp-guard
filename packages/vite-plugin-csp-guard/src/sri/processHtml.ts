@@ -71,7 +71,9 @@ function getIntegrityForUrl(
       return undefined;
     }
 
-    return sriByPathname[parsed.pathname];
+    const integrity = sriByPathname[parsed.pathname];
+    if (integrity) return integrity;
+    return sriByPathname[decodeURI(parsed.pathname)];
   } catch {
     return undefined;
   }

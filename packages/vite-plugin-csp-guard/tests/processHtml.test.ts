@@ -7,6 +7,7 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises";
+import { createHash } from "node:crypto";
 import os from "node:os";
 import path from "node:path";
 import { load } from "cheerio";
@@ -29,6 +30,43 @@ const integrity = "sha256-local-bundle";
 const sriByPathname = { "/assets/main.js": integrity };
 
 describe("processHtmlForSri asset-origin matching", () => {
+  test.each([
+    { fileName: "café-x.js", url: "caf%C3%A9-x.js" },
+    { fileName: "space name.js", url: "space%20name.js" },
+  ])("matches URL-encoded filename $fileName", ({ fileName, url }) => {
+    const value = "sha256-encoded-filename";
+    const html = processHtmlForSri(
+      `<script src="/assets/${url}"></script>`,
+      { [`/assets/${fileName}`]: value },
+      new Set(),
+      "/",
+    );
+
+    expect(load(html)("script").attr("integrity")).toBe(value);
+  });
+
+  test("does not decode encoded reserved path separators", () => {
+    const html = processHtmlForSri(
+      '<script src="/assets/foo%2Fbar.js"></script>',
+      { "/assets/foo/bar.js": "sha256-ambiguous" },
+      new Set(),
+      "/",
+    );
+
+    expect(load(html)("script").attr("integrity")).toBeUndefined();
+  });
+
+  test("does not duplicate a Vite preload with a raw non-ASCII href", () => {
+    const html = processHtmlForSri(
+      '<link rel="modulepreload" href="/assets/café.js">',
+      { "/assets/café.js": "sha256-café" },
+      new Set(["assets/café.js"]),
+      "/",
+    );
+
+    expect(load(html)("link[rel='modulepreload']")).toHaveLength(1);
+  });
+
   test("leaves third-party URLs with the same pathname untouched for a path base", () => {
     const html = processHtmlForSri(
       `<script src="https://third-party.example/assets/main.js" integrity="sha256-author"></script><script src="https://third-party.example/assets/main.js?without-integrity"></script>`,
@@ -129,6 +167,47 @@ describe("processHtmlForSri asset-origin matching", () => {
     expect($("script").attr("integrity")).toBe(integrity);
     expect($("script").attr("crossorigin")).toBe("anonymous");
   });
+});
+
+test("adds SRI to a Vite entry with a non-ASCII output filename", async () => {
+  const tempDir = await realpath(
+    await mkdtemp(path.join(os.tmpdir(), "csp-guard-encoded-entry-")),
+  );
+  tempDirectories.push(tempDir);
+  const fixtureDir = path.join(tempDir, "fixture");
+  const outDir = path.join(tempDir, "dist");
+  await mkdir(path.join(fixtureDir, "src"), { recursive: true });
+  await writeFile(
+    path.join(fixtureDir, "index.html"),
+    '<!doctype html><html><head></head><body><script type="module" src="/src/main.js"></script></body></html>',
+  );
+  await writeFile(path.join(fixtureDir, "src/main.js"), "window.encodedEntry = true;");
+
+  await build({
+    configFile: false,
+    root: fixtureDir,
+    logLevel: "silent",
+    plugins: [vitePluginCSP({ build: { sri: true } })],
+    build: {
+      outDir,
+      emptyOutDir: true,
+      rolldownOptions: {
+        output: { entryFileNames: "assets/café-[hash].js" },
+      },
+    },
+  });
+
+  const assets = await readdir(path.join(outDir, "assets"));
+  const entryName = assets.find((name) => name.startsWith("café-") && name.endsWith(".js"));
+  expect(entryName).toBeDefined();
+  const entryCode = await readFile(path.join(outDir, "assets", entryName!), "utf8");
+  const html = await readFile(path.join(outDir, "index.html"), "utf8");
+  const $ = load(html);
+  const entryScript = $("script[type='module'][src]").first();
+  const expectedIntegrity = `sha256-${createHash("sha256").update(entryCode).digest("base64")}`;
+
+  expect(entryScript.attr("src")).toBe(`/assets/${entryName}`);
+  expect(entryScript.attr("integrity")).toBe(expectedIntegrity);
 });
 
 test("runtime injection includes a full-URL asset base", async () => {
