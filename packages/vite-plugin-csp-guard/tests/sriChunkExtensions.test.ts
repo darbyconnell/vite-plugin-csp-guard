@@ -10,7 +10,7 @@ import { buildIntegrityMappings } from "../src/sri";
 const sha256 = (source: string) =>
   `sha256-${createHash("sha256").update(source).digest("base64")}`;
 
-describe("SRI hashing", () => {
+describe("SRI chunk extension hashing", () => {
   test.each(["x.chunk", "x.cjs"])(
     "buildIntegrityMappings hashes chunk %s regardless of extension",
     (fileName) => {
