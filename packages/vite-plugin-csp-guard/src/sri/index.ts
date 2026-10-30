@@ -3,4 +3,9 @@ export { analyzeDynamicImports } from "./DynamicImportAnalyzer";
 export { processHtmlForSri, withBasePathname } from "./processHtml";
 export { installSriRuntime } from "./runtime";
 export { collectReachableFiles } from "./reachableFiles";
-export { getHtmlModuleRootChunks, injectSriBootstrap } from "./bootstrap";
+export {
+  addSriBootstrapCspHashes,
+  getHtmlModuleRootChunks,
+  getHtmlModuleRoots,
+  injectSriBootstrap,
+} from "./bootstrap";

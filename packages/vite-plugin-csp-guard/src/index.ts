@@ -38,8 +38,9 @@ import {
   installSriRuntime,
   withBasePathname,
   collectReachableFiles,
-  getHtmlModuleRootChunks,
+  getHtmlModuleRoots,
   injectSriBootstrap,
+  addSriBootstrapCspHashes,
 } from "./sri";
 import { injectRuntimeAndShiftSourceMaps } from "./sri/injectRuntime";
 import type { OutputBundle as RollupOutputBundle, OutputChunk } from "rollup";
@@ -271,6 +272,7 @@ export default function vitePluginCSP(
           html: string;
         }[] = [];
         const emittedBootstrapSources = new Map<string, string>();
+        const emittedBootstrapHashes = new Set<string>();
 
         try {
           if (debug) console.log("[SRI] Processing bundle for lazy chunk SRI...");
@@ -280,6 +282,7 @@ export default function vitePluginCSP(
           const base = resolvedConfig?.base ?? "/";
 
           const htmlRootChunks = new Set<string>();
+          const asyncHtmlRootChunks = new Set<string>();
           for (const [fileName, item] of Object.entries(bundle)) {
             if (
               !fileName.toLowerCase().endsWith(".html") ||
@@ -291,17 +294,19 @@ export default function vitePluginCSP(
               typeof item.source === "string"
                 ? item.source
                 : Buffer.from(item.source).toString();
-            for (const root of getHtmlModuleRootChunks(
+            for (const root of getHtmlModuleRoots(
               html,
               fileName,
               bundle,
               base,
             )) {
-              htmlRootChunks.add(root);
+              if (root.async) asyncHtmlRootChunks.add(root.fileName);
+              else htmlRootChunks.add(root.fileName);
             }
           }
 
-          // 2. Keep a prepended runtime only for entries that no HTML page loads.
+          // 2. Keep a prepend for non-HTML entries and async module roots,
+          // which may execute before their deferred bootstrap script.
           if (sriConfig.runtimePatchDynamicLinks) {
             const runtime = installSriRuntime.toString();
             const relativeBase = base === "./" || base === "";
@@ -315,7 +320,12 @@ export default function vitePluginCSP(
               if (chunk.type !== "chunk" || !chunk.isEntry || !chunk.code) {
                 continue;
               }
-              if (htmlRootChunks.has(fileName)) continue;
+              if (
+                htmlRootChunks.has(fileName) &&
+                !asyncHtmlRootChunks.has(fileName)
+              ) {
+                continue;
+              }
 
               const entryMap: Record<string, string> = {};
               for (const file of collectReachableFiles(
@@ -415,17 +425,25 @@ export default function vitePluginCSP(
                 algorithm,
                 sriByPathname,
                 crossorigin: sriConfig.crossorigin,
-                shouldAddCspHash: !shouldSkip["script-src-elem"],
                 sriRuntimeOptions,
                 assetBaseOption,
                 getModuleInfo: (id) => this.getModuleInfo(id),
                 filesByModuleId,
+                bootstrapHashes: emittedBootstrapHashes,
                 emitFile: (file) => this.emitFile(file),
                 emittedSources: emittedBootstrapSources,
               });
             }
 
             htmlAssets.push({ asset, html: processed });
+          }
+
+          for (const entry of htmlAssets) {
+            entry.html = addSriBootstrapCspHashes(
+              entry.html,
+              emittedBootstrapHashes,
+              !shouldSkip["script-src-elem"],
+            );
           }
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);

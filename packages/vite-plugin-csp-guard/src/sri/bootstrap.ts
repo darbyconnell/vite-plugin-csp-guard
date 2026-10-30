@@ -3,6 +3,7 @@ import * as path from "path";
 import type { Rolldown } from "vite";
 import type { HashAlgorithms } from "../types";
 import { generateHash } from "../policy/core";
+import { policyHasUnsafeInline } from "../policy/keywordForm";
 import { collectReachableFiles } from "./reachableFiles";
 import { withBasePathname } from "./processHtml";
 import { installSriRuntime } from "./runtime";
@@ -62,15 +63,17 @@ function sourcePathname(
   }
 }
 
-/** Resolve the output chunks referenced by a page's module script tags. */
-export function getHtmlModuleRootChunks(
+export type HtmlModuleRoot = { fileName: string; async: boolean };
+
+/** Resolve output chunks referenced by a page's module script tags. */
+export function getHtmlModuleRoots(
   html: string,
   htmlFileName: string,
   bundle: Rolldown.OutputBundle,
   base: string,
-): string[] {
+): HtmlModuleRoot[] {
   const $ = cheerio.load(html);
-  const roots = new Set<string>();
+  const roots = new Map<string, HtmlModuleRoot>();
 
   $("script").each((_, element) => {
     const script = $(element);
@@ -78,10 +81,25 @@ export function getHtmlModuleRootChunks(
     const src = script.attr("src");
     if (!src) return;
     const fileName = sourcePathname(src, htmlFileName, base);
-    if (fileName && bundle[fileName]?.type === "chunk") roots.add(fileName);
+    if (fileName && bundle[fileName]?.type === "chunk") {
+      const async = script.attr("async") !== undefined;
+      const existing = roots.get(fileName);
+      roots.set(fileName, { fileName, async: async || !!existing?.async });
+    }
   });
 
-  return [...roots];
+  return [...roots.values()];
+}
+
+export function getHtmlModuleRootChunks(
+  html: string,
+  htmlFileName: string,
+  bundle: Rolldown.OutputBundle,
+  base: string,
+): string[] {
+  return getHtmlModuleRoots(html, htmlFileName, bundle, base).map(
+    (root) => root.fileName,
+  );
 }
 
 function bootstrapHref(
@@ -102,8 +120,15 @@ function bootstrapHref(
     : `/${bootstrapFileName}`;
 }
 
-function addBootstrapCspHash($: cheerio.CheerioAPI, hash: string): void {
-  const source = `'${hash}'`;
+export function addSriBootstrapCspHashes(
+  html: string,
+  hashes: Iterable<string>,
+  shouldAddCspHash: boolean,
+): string {
+  if (!shouldAddCspHash) return html;
+  const sources = [...new Set([...hashes].map((hash) => `'${hash}'`))];
+  if (!sources.length) return html;
+  const $ = cheerio.load(html);
   $("meta").each((_, element) => {
     const meta = $(element);
     if (
@@ -125,13 +150,17 @@ function addBootstrapCspHash($: cheerio.CheerioAPI, hash: string): void {
       const [, leading, name, remainder] = match;
       const trailing = /\s*$/.exec(remainder!)?.[0] ?? "";
       const values = remainder!.trim().split(/\s+/).filter(Boolean);
-      if (!values.includes(source)) values.push(source);
+      if (policyHasUnsafeInline(values)) break;
+      for (const source of sources) {
+        if (!values.includes(source)) values.push(source);
+      }
       directives[index] =
         `${leading}${name}${values.length ? ` ${values.join(" ")}` : ""}${trailing}`;
       break;
     }
     meta.attr("content", directives.join(";"));
   });
+  return $.html();
 }
 
 export type SriBootstrapOptions = {
@@ -143,11 +172,11 @@ export type SriBootstrapOptions = {
   algorithm: HashAlgorithms;
   sriByPathname: Record<string, string>;
   crossorigin?: string;
-  shouldAddCspHash: boolean;
   sriRuntimeOptions: string;
   assetBaseOption: string;
   getModuleInfo: (id: string) => Rolldown.ModuleInfo | null;
   filesByModuleId: Map<string, string[]>;
+  bootstrapHashes: Set<string>;
   emitFile: (file: { type: "asset"; fileName: string; source: string }) => void;
   emittedSources: Map<string, string>;
 };
@@ -163,11 +192,11 @@ export function injectSriBootstrap(options: SriBootstrapOptions): string {
     algorithm,
     sriByPathname,
     crossorigin,
-    shouldAddCspHash,
     sriRuntimeOptions,
     assetBaseOption,
     getModuleInfo,
     filesByModuleId,
+    bootstrapHashes,
     emitFile,
     emittedSources,
   } = options;
@@ -218,6 +247,7 @@ export function injectSriBootstrap(options: SriBootstrapOptions): string {
   }
 
   const integrity = `${algorithm}-${contentHash}`;
+  bootstrapHashes.add(integrity);
   const $ = cheerio.load(html);
   const firstModule = $("script")
     .filter(
@@ -233,6 +263,5 @@ export function injectSriBootstrap(options: SriBootstrapOptions): string {
     .attr("integrity", integrity)
     .attr("crossorigin", crossorigin || "anonymous");
   firstModule.before(bootstrap);
-  if (shouldAddCspHash) addBootstrapCspHash($, integrity);
   return $.html();
 }

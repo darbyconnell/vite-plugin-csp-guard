@@ -8,7 +8,10 @@ import vitePluginCSP from "../src/index";
 import { generateHash } from "../src/policy/core";
 import { processHtmlForSri } from "../src/sri/processHtml";
 import { PENDING_POLICY_ATTR } from "../src/transform";
-import { getHtmlModuleRootChunks } from "../src/sri/bootstrap";
+import {
+  addSriBootstrapCspHashes,
+  getHtmlModuleRootChunks,
+} from "../src/sri/bootstrap";
 import type { MyPluginOptions } from "../src/types";
 
 async function writeFixture(root: string) {
@@ -187,6 +190,21 @@ describe("HTML module root discovery", () => {
       [],
     );
   });
+
+  test.each([
+    ["'unsafe-inline'", false],
+    ["'unsafe-inline' 'sha256-existing'", true],
+    ["'unsafe-inline' 'nonce-existing'", true],
+    ["'unsafe-inline' 'strict-dynamic'", true],
+  ])("only extends script-src-elem when unsafe-inline remains effective (%s)", (sources, addHash) => {
+    const html =
+      `<meta http-equiv="Content-Security-Policy" content="script-src-elem ${sources}">`;
+    const updated = cheerio.load(
+      addSriBootstrapCspHashes(html, ["sha256-bootstrap"], true),
+    )('meta[http-equiv="Content-Security-Policy"]').attr("content");
+
+    expect(updated?.includes("'sha256-bootstrap'")).toBe(addHash);
+  });
 });
 
 describe("dynamic import preload lists", () => {
@@ -364,6 +382,34 @@ describe("HTML SRI runtime bootstrap maps", () => {
           `sha256-${generateHash(String(css.source), "sha256")}`,
         ),
       );
+    }
+  }, 30000);
+
+  test("async HTML module roots retain the entry runtime prepend", async () => {
+    const asyncRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "csp-guard-async-root-")),
+    );
+    try {
+      await writeFile(
+        join(asyncRoot, "index.html"),
+        '<!doctype html><html><head></head><body><script type="module" async src="./main.js"></script></body></html>',
+      );
+      await writeFile(join(asyncRoot, "main.js"), "window.asyncRootLoaded = true;\n");
+
+      const result = await buildFixture(asyncRoot, {
+        algorithm: "sha256",
+        build: { sri: true },
+      });
+
+      expect(result.$("script[type='module'][async]").length).toBe(1);
+      expect(result.entry.code.startsWith("(function installSriRuntime")).toBe(
+        true,
+      );
+      expect(result.entry.code).toContain(
+        'Symbol.for("vite-plugin-csp-guard.sri")',
+      );
+    } finally {
+      await rm(asyncRoot, { recursive: true, force: true });
     }
   }, 30000);
 
@@ -616,6 +662,50 @@ describe("multi-page entry SRI runtime maps", () => {
       ).toHaveLength(1);
     } finally {
       await rm(sharedRoot, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  test("all page bootstrap hashes reach every page and transformPolicy callback", async () => {
+    const input = { a: join(root, "a.html"), b: join(root, "b.html") };
+    const transformedPolicies: string[] = [];
+    const result = await buildFixture(
+      root,
+      {
+        algorithm: "sha256",
+        build: { sri: true },
+        transformPolicy: (policy) => {
+          transformedPolicies.push(policy);
+          return undefined;
+        },
+      },
+      { input },
+    );
+    const bootstrapAssets = ["a.html", "b.html"].map((htmlFileName) =>
+      bootstrapForHtml(result, htmlFileName),
+    );
+    expect(bootstrapAssets.every(Boolean)).toBe(true);
+    const bootstrapHashes = bootstrapAssets.map(
+      (asset) => `sha256-${generateHash(String(asset!.source), "sha256")}`,
+    );
+    expect(new Set(bootstrapHashes).size).toBe(2);
+    expect(transformedPolicies).toHaveLength(2);
+    for (const policy of transformedPolicies) {
+      for (const hash of bootstrapHashes) {
+        expect(policy).toContain(`'${hash}'`);
+      }
+    }
+    for (const htmlFileName of ["a.html", "b.html"]) {
+      const html = result.output.find(
+        (item): item is Rolldown.OutputAsset =>
+          item.type === "asset" && item.fileName === htmlFileName,
+      );
+      expect(html).toBeDefined();
+      const policy = cheerio
+        .load(String(html!.source))('meta[http-equiv="Content-Security-Policy"]')
+        .attr("content");
+      for (const hash of bootstrapHashes) {
+        expect(policy).toContain(`'${hash}'`);
+      }
     }
   }, 30000);
 });
