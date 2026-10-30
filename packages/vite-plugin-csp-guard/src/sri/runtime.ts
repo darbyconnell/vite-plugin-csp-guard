@@ -83,8 +83,10 @@ export function installSriRuntime(
       (runtimeGlobal[registryKey] = {
         lookups: [],
         owned: new WeakMap<any, string>(),
+        ownedCors: new WeakMap<any, string>(),
         patched: false,
       });
+    if (!registry.ownedCors) registry.ownedCors = new WeakMap<any, string>();
     registry.lookups.push((el: any, url: string | null, overrides: any) => {
       if (!url || shouldSkip(el, overrides)) return;
       const integrity = getIntegrity(url);
@@ -94,6 +96,7 @@ export function installSriRuntime(
     registry.patched = true;
 
     const installedIntegrities = registry.owned;
+    const installedCrossorigins = registry.ownedCors;
     const elementPrototype = (Element as any)?.prototype;
     const origSetAttr = elementPrototype?.setAttribute;
     const origRemoveAttr = elementPrototype?.removeAttribute;
@@ -174,13 +177,27 @@ export function installSriRuntime(
         }
       }
 
-      // Keep crossorigin when clearing a hash: changing it can refetch connected stylesheets and is harmless on asset-origin resources.
+      // Remove only runtime-owned crossorigin when its hash no longer applies; leave author values untouched.
+      const currentCrossorigin = el.getAttribute?.("crossorigin") ?? null;
+      const installedCrossorigin = installedCrossorigins.get(el);
+      const isRuntimeOwnedCrossorigin =
+        installedCrossorigin !== undefined && currentCrossorigin === installedCrossorigin;
+      if (installedCrossorigin !== undefined && !isRuntimeOwnedCrossorigin) {
+        installedCrossorigins.delete(el);
+      }
+
+      if (!desiredIntegrity && isRuntimeOwnedCrossorigin && origRemoveAttr) {
+        origRemoveAttr.call(el, "crossorigin");
+        installedCrossorigins.delete(el);
+      }
+
       if (
         desired?.crossorigin &&
         !el.hasAttribute("crossorigin") &&
         origSetAttr
       ) {
         origSetAttr.call(el, "crossorigin", desired.crossorigin);
+        installedCrossorigins.set(el, desired.crossorigin);
       }
     };
 
