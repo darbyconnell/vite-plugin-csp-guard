@@ -16,14 +16,11 @@ export function buildIntegrityMappings(
     if (item.type === "asset" && !PROCESSABLE_EXTENSIONS.test(fileName))
       continue;
 
-    let source: string;
+    let source: string | Uint8Array;
     if (item.type === "asset") {
       const asset = item as OutputAsset;
       if (!asset.source) continue;
-      source =
-        typeof asset.source === "string"
-          ? asset.source
-          : Buffer.from(asset.source).toString();
+      source = asset.source;
     } else if (item.type === "chunk") {
       const chunk = item as OutputChunk;
       if (!chunk.code) continue;

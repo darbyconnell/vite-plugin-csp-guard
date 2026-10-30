@@ -7,7 +7,7 @@ import { describe, expect, test } from "vitest";
 import vitePluginCSP from "../src";
 import { buildIntegrityMappings } from "../src/sri";
 
-const sha256 = (source: string) =>
+const sha256 = (source: string | Uint8Array) =>
   `sha256-${createHash("sha256").update(source).digest("base64")}`;
 
 describe("SRI chunk extension hashing", () => {
@@ -41,6 +41,21 @@ describe("SRI chunk extension hashing", () => {
       });
     },
   );
+
+  test("hashes byte assets using their original bytes", () => {
+    const source = Uint8Array.from([0x62, 0xff, 0x7d]);
+    const bundle = {
+      "asset.css": {
+        type: "asset" as const,
+        fileName: "asset.css",
+        source,
+      },
+    } as unknown as OutputBundle;
+
+    expect(buildIntegrityMappings(bundle, "sha256", false)).toEqual({
+      "/asset.css": sha256(source),
+    });
+  });
 
   test.each([".chunk", ".cjs"])(
     "adds entry-script integrity to a Vite build with %s output names",
