@@ -68,7 +68,9 @@ export function installSriRuntime(
           "";
         const u = new URL(url, base);
         if (assetOrigin && u.origin !== assetOrigin) return undefined;
-        return map.get(u.pathname);
+        const integrity = map.get(u.pathname);
+        if (integrity) return integrity;
+        return map.get(decodeURI(u.pathname));
       } catch {
         return undefined;
       }
