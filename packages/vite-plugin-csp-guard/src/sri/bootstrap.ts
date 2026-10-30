@@ -200,14 +200,14 @@ export function injectSriBootstrap(options: SriBootstrapOptions): string {
     emitFile,
     emittedSources,
   } = options;
-  const roots = getHtmlModuleRootChunks(html, htmlFileName, bundle, base);
+  const roots = getHtmlModuleRoots(html, htmlFileName, bundle, base);
   if (!roots.length) return html;
 
   const entryMap: Record<string, string> = {};
   for (const root of roots) {
     for (const file of collectReachableFiles(
       bundle,
-      root,
+      root.fileName,
       getModuleInfo,
       filesByModuleId,
     )) {
@@ -258,10 +258,10 @@ export function injectSriBootstrap(options: SriBootstrapOptions): string {
   if (!firstModule.length) return html;
 
   const bootstrap = $("<script></script>")
-    .attr("defer", "")
     .attr("src", bootstrapHref(htmlFileName, bootstrapFileName, base))
     .attr("integrity", integrity)
     .attr("crossorigin", crossorigin || "anonymous");
+  if (!roots.some((root) => root.async)) bootstrap.attr("defer", "");
   firstModule.before(bootstrap);
   return $.html();
 }

@@ -43,7 +43,7 @@ async function buildFixture(
     base?: string;
     entryFileNames?: string;
     input?: Record<string, string>;
-    library?: boolean;
+    library?: boolean | "cjs";
   } = {},
 ) {
   const result = await build({
@@ -57,7 +57,12 @@ async function buildFixture(
       minify: false,
       assetsDir: "assets",
       ...(config.library
-        ? { lib: { entry: join(root, "main.js"), formats: ["es"] as const } }
+        ? {
+            lib: {
+              entry: join(root, "main.js"),
+              formats: [config.library === "cjs" ? "cjs" : "es"] as const,
+            },
+          }
         : {}),
       ...(config.entryFileNames || config.input
         ? {
@@ -385,7 +390,7 @@ describe("HTML SRI runtime bootstrap maps", () => {
     }
   }, 30000);
 
-  test("async HTML module roots retain the entry runtime prepend", async () => {
+  test("async HTML roots get a parser-blocking bootstrap instead of an entry prepend", async () => {
     const asyncRoot = await realpath(
       await mkdtemp(join(tmpdir(), "csp-guard-async-root-")),
     );
@@ -401,15 +406,129 @@ describe("HTML SRI runtime bootstrap maps", () => {
         build: { sri: true },
       });
 
+      const bootstrap = result.$("script[integrity]").first();
+      const moduleScript = result.$("script[type='module']").first();
       expect(result.$("script[type='module'][async]").length).toBe(1);
+      expect(bootstrap.attr("defer")).toBeUndefined();
+      expect(bootstrap.index()).toBeLessThan(moduleScript.index());
+      expect(result.entry.code).not.toContain("vite-plugin-csp-guard.sri");
+      expect(result.entry.code).not.toMatch(/^import\s/m);
+    } finally {
+      await rm(asyncRoot, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  test("non-HTML ES entries import one deduplicated runtime module with their reachable maps", async () => {
+    const entryRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "csp-guard-es-entry-")),
+    );
+    try {
+      await writeFile(
+        join(entryRoot, "main.js"),
+        "import { shared } from './shared.js'; globalThis.main = shared;\n",
+      );
+      await writeFile(
+        join(entryRoot, "other.js"),
+        "import { shared } from './shared.js'; globalThis.other = shared;\n",
+      );
+      await writeFile(
+        join(entryRoot, "shared.js"),
+        "import './shared.css'; export const shared = 42;\n",
+      );
+      await writeFile(join(entryRoot, "shared.css"), ".shared { color: red; }\n");
+
+      const result = await buildFixture(
+        entryRoot,
+        { algorithm: "sha256", build: { sri: true } },
+        {
+          input: {
+            main: join(entryRoot, "main.js"),
+            other: join(entryRoot, "other.js"),
+          },
+        },
+      );
+      const entries = result.chunks.filter((chunk) => chunk.isEntry);
+      const runtimeModules = result.output.filter(
+        (item): item is Rolldown.OutputAsset =>
+          item.type === "asset" &&
+          /csp-guard-sri-module-.*\.js$/.test(item.fileName),
+      );
+      expect(entries).toHaveLength(2);
+      expect(runtimeModules).toHaveLength(1);
+      const runtimeSource = String(runtimeModules[0]!.source);
+      expect(runtimeSource).not.toMatch(/^\s*import\s/m);
+      expect(runtimeSource).toContain("shared-");
+
+      for (const entry of entries) {
+        const importLine = entry.code.split("\n", 1)[0]!;
+        expect(importLine).toMatch(/^import \"\.\/.*csp-guard-sri-module-/);
+        expect(entry.imports).toContain(runtimeModules[0]!.fileName);
+      }
+
+      const sharedCss = result.output.find(
+        (item): item is Rolldown.OutputAsset =>
+          item.type === "asset" && item.fileName.endsWith(".css"),
+      );
+      expect(sharedCss).toBeDefined();
+      expect(runtimeSource).toContain(
+        runtimeMapPair(
+          sharedCss!.fileName,
+          `sha256-${generateHash(String(sharedCss!.source), "sha256")}`,
+        ),
+      );
+    } finally {
+      await rm(entryRoot, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  test("relative-base ES runtime module resolves its root from import.meta.url", async () => {
+    const entryRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "csp-guard-relative-module-")),
+    );
+    try {
+      await writeFile(join(entryRoot, "main.js"), "globalThis.main = true;\n");
+      const result = await buildFixture(
+        entryRoot,
+        { algorithm: "sha256", build: { sri: true } },
+        { base: "./", input: { main: join(entryRoot, "main.js") } },
+      );
+      const runtimeModule = result.output.find(
+        (item): item is Rolldown.OutputAsset =>
+          item.type === "asset" &&
+          /csp-guard-sri-module-.*\.js$/.test(item.fileName),
+      );
+      expect(runtimeModule).toBeDefined();
+      expect(String(runtimeModule!.source)).toContain(
+        'new URL("../", import.meta.url).href',
+      );
+    } finally {
+      await rm(entryRoot, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  test("non-ES entries retain the runtime prepend fallback", async () => {
+    const entryRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "csp-guard-cjs-entry-")),
+    );
+    try {
+      await writeFile(join(entryRoot, "main.js"), "module.exports = 42;\n");
+      const result = await buildFixture(
+        entryRoot,
+        { algorithm: "sha256", build: { sri: true } },
+        { library: "cjs" },
+      );
       expect(result.entry.code.startsWith("(function installSriRuntime")).toBe(
         true,
       );
-      expect(result.entry.code).toContain(
-        'Symbol.for("vite-plugin-csp-guard.sri")',
-      );
+      expect(
+        result.output.some(
+          (item) =>
+            item.type === "asset" &&
+            /csp-guard-sri-module-.*\.js$/.test(item.fileName),
+        ),
+      ).toBe(false);
     } finally {
-      await rm(asyncRoot, { recursive: true, force: true });
+      await rm(entryRoot, { recursive: true, force: true });
     }
   }, 30000);
 

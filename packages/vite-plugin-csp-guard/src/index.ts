@@ -31,6 +31,7 @@ import {
 import { unstable_handleModuleParsed } from "./css";
 import { FEATURE_FLAGS } from "./constants";
 import { mergePolicies } from "csp-toolkit";
+import * as path from "path";
 import {
   buildIntegrityMappings,
   analyzeDynamicImports,
@@ -92,7 +93,7 @@ export default function vitePluginCSP(
   const sriRuntimeFingerprint =
     `${installSriRuntime.toString()}|${sriRuntimeOptions}|${algorithm}`;
   // Bump whenever the injected wrapper around the SRI runtime changes.
-  const SRI_INJECTION_VERSION = "2";
+  const SRI_INJECTION_VERSION = "3";
 
   const CORE_COLLECTION = createNewCollection();
 
@@ -271,7 +272,7 @@ export default function vitePluginCSP(
           asset: { type: "asset"; source: string | Buffer };
           html: string;
         }[] = [];
-        const emittedBootstrapSources = new Map<string, string>();
+        const emittedSources = new Map<string, string>();
         const emittedBootstrapHashes = new Set<string>();
 
         try {
@@ -282,7 +283,6 @@ export default function vitePluginCSP(
           const base = resolvedConfig?.base ?? "/";
 
           const htmlRootChunks = new Set<string>();
-          const asyncHtmlRootChunks = new Set<string>();
           for (const [fileName, item] of Object.entries(bundle)) {
             if (
               !fileName.toLowerCase().endsWith(".html") ||
@@ -300,13 +300,11 @@ export default function vitePluginCSP(
               bundle,
               base,
             )) {
-              if (root.async) asyncHtmlRootChunks.add(root.fileName);
-              else htmlRootChunks.add(root.fileName);
+              htmlRootChunks.add(root.fileName);
             }
           }
 
-          // 2. Keep a prepend for non-HTML entries and async module roots,
-          // which may execute before their deferred bootstrap script.
+          // 2. Initialize the runtime before entry dependencies can execute.
           if (sriConfig.runtimePatchDynamicLinks) {
             const runtime = installSriRuntime.toString();
             const relativeBase = base === "./" || base === "";
@@ -321,8 +319,7 @@ export default function vitePluginCSP(
                 continue;
               }
               if (
-                htmlRootChunks.has(fileName) &&
-                !asyncHtmlRootChunks.has(fileName)
+                htmlRootChunks.has(fileName)
               ) {
                 continue;
               }
@@ -338,30 +335,87 @@ export default function vitePluginCSP(
                 if (integrity) entryMap[`/${file}`] = integrity;
               }
               const map = JSON.stringify(withBasePathname(entryMap, base));
-              // A relative base can be deployed under any path, so resolve the
-              // map against the entry chunk's own URL at runtime.
+              // A relative base can be deployed under any path, so resolve it
+              // from the runtime module URL (ES) or document base (fallback).
               let options = `${sriRuntimeOptions.slice(0, -1)}${assetBaseOption}}`;
-              if (relativeBase) {
-                const root =
-                  _options.format === "es"
-                    ? `new URL(${JSON.stringify(
-                        "../".repeat((fileName.match(/\//g) || []).length) || "./",
-                      )}, import.meta.url).href`
-                    : `typeof document !== "undefined" ? document.baseURI : undefined`;
-                options = `${options.slice(0, -1)},root:${root}}`;
+              if (relativeBase && _options.format !== "es") {
+                options = `${options.slice(0, -1)},root:typeof document !== "undefined" ? document.baseURI : undefined}`;
               }
-              injectRuntimeAndShiftSourceMaps(
-                chunk as unknown as OutputChunk,
-                rollupBundle,
-                `(${runtime})(${map},${options});\n`,
-              );
+
+              if (_options.format === "es") {
+                const assetsDir = resolvedConfig?.build.assetsDir ?? "assets";
+                if (relativeBase) {
+                  // The runtime module resolves relative deployments from its
+                  // own emitted URL, not from the entry importing it.
+                  const runtimeModulePath = path.posix.join(
+                    assetsDir,
+                    "csp-guard-sri-module.js",
+                  );
+                  const root = `new URL(${JSON.stringify(
+                    "../".repeat((runtimeModulePath.match(/\//g) || []).length) || "./",
+                  )}, import.meta.url).href`;
+                  options = `${options.slice(0, -1)},root:${root}}`;
+                }
+                const runtimeModuleSource = `(${runtime})(${map},${options});`;
+                const contentHash = generateHash(runtimeModuleSource, algorithm);
+                const shortContentHash = contentHash
+                  .replace(/\+/g, "-")
+                  .replace(/\//g, "_")
+                  .replace(/=+$/, "")
+                  .slice(0, 12);
+                const runtimeModuleFileName = path.posix.join(
+                  assetsDir,
+                  `csp-guard-sri-module-${shortContentHash}.js`,
+                );
+                const priorSource = emittedSources.get(runtimeModuleFileName);
+                if (priorSource && priorSource !== runtimeModuleSource) {
+                  throw new Error(
+                    `SRI runtime module filename collision: ${runtimeModuleFileName}`,
+                  );
+                }
+                if (!priorSource) {
+                  this.emitFile({
+                    type: "asset",
+                    fileName: runtimeModuleFileName,
+                    source: runtimeModuleSource,
+                  });
+                  emittedSources.set(runtimeModuleFileName, runtimeModuleSource);
+                }
+
+                const relativeRuntimePath = path.posix.relative(
+                  path.posix.dirname(fileName),
+                  runtimeModuleFileName,
+                );
+                const importSpecifier = relativeRuntimePath.startsWith(".")
+                  ? relativeRuntimePath
+                  : `./${relativeRuntimePath}`;
+                // Static ES imports have no per-import integrity metadata unless
+                // the platform supports import-map integrity, so this runtime
+                // module is a plain side-effect import.
+                injectRuntimeAndShiftSourceMaps(
+                  chunk as unknown as OutputChunk,
+                  rollupBundle,
+                  `import ${JSON.stringify(importSpecifier)};\n`,
+                );
+                if (!chunk.imports.includes(runtimeModuleFileName)) {
+                  chunk.imports.push(runtimeModuleFileName);
+                }
+              } else {
+                // For non-ES formats, prepend remains the fallback: module
+                // dependency evaluation ordering cannot be expressed there.
+                injectRuntimeAndShiftSourceMaps(
+                  chunk as unknown as OutputChunk,
+                  rollupBundle,
+                  `(${runtime})(${map},${options});\n`,
+                );
+              }
               if (debug) {
                 console.log(`[SRI] Injected runtime into entry: ${fileName}`);
               }
             }
 
-            // Rebuild integrity map so any remaining prepended entry runtimes
-            // have final hashes before HTML and bootstrap maps are generated.
+            // Rebuild after runtime imports/prepends so entry hashes are final
+            // before HTML integrity and bootstrap maps are generated.
             sriByPathname = buildIntegrityMappings(
               rollupBundle,
               algorithm,
@@ -431,7 +485,7 @@ export default function vitePluginCSP(
                 filesByModuleId,
                 bootstrapHashes: emittedBootstrapHashes,
                 emitFile: (file) => this.emitFile(file),
-                emittedSources: emittedBootstrapSources,
+                emittedSources,
               });
             }
 

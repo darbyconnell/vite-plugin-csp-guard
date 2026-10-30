@@ -125,7 +125,7 @@ async function buildFixture(sourcemap: true | "hidden" | "inline") {
 
 describe("SRI runtime source maps", () => {
   test.each([true, "hidden", "inline"] as const)(
-    "preserves entry source maps when a non-HTML runtime is prepended (sourcemap=%s)",
+    "preserves entry source maps when a non-HTML runtime import is added (sourcemap=%s)",
     async (sourcemap) => {
       const { chunk, map, source } = await buildFixture(sourcemap);
       const markerIndex = chunk.code.indexOf("globalThis.sourceMapMarker");
@@ -151,8 +151,12 @@ describe("SRI runtime source maps", () => {
       expect(original.column).toBe(0);
       expect(source.split("\n")[original.line! - 1]).toContain(marker);
 
-      expect(chunk.code).toContain('Symbol.for("vite-plugin-csp-guard.sri")');
-      expect(chunk.code.startsWith("(function installSriRuntime")).toBe(true);
+      expect(chunk.code.split("\n", 1)[0]).toMatch(
+        /^import "(?:\.\/|\.\.\/).*csp-guard-sri-module-/,
+      );
+      expect(chunk.imports.some((fileName) =>
+        /csp-guard-sri-module-.*\.js$/.test(fileName),
+      )).toBe(true);
     },
   );
 });
