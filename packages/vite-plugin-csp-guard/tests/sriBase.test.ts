@@ -103,9 +103,16 @@ describe("SRI with a non-root base", () => {
     const expectedPair = `${JSON.stringify(expectedKey)}:${JSON.stringify(
       integrity(lazy.code),
     )}`;
-    expect(entry.code).toContain(expectedPair);
+    const bootstrapAsset = output.output.find(
+      (item): item is Rolldown.OutputAsset =>
+        item.type === "asset" && /csp-guard-sri-.*\.js$/.test(item.fileName),
+    );
+    expect(bootstrapAsset).toBeDefined();
+    const bootstrapCode = String(bootstrapAsset!.source);
+    expect(bootstrapCode).toContain(expectedPair);
+    expect(entry.code).not.toContain("vite-plugin-csp-guard.sri");
     if (basePathname) {
-      expect(entry.code).not.toContain(
+      expect(bootstrapCode).not.toContain(
         `${JSON.stringify(`/${lazy.fileName}`)}:`,
       );
     }

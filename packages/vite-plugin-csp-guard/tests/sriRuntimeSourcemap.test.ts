@@ -1,4 +1,3 @@
-import { createHash } from "node:crypto";
 import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { originalPositionFor, TraceMap } from "@jridgewell/trace-mapping";
@@ -7,8 +6,8 @@ import { describe, expect, test } from "vitest";
 import vitePluginCSP from "../src";
 import { injectRuntimeAndShiftSourceMaps } from "../src/sri/injectRuntime";
 
-type OutputAsset = Rolldown.OutputAsset;
 type OutputChunk = Rolldown.OutputChunk;
+type OutputAsset = Rolldown.OutputAsset;
 
 const marker = "distinctive-original-statement";
 
@@ -40,7 +39,11 @@ describe("inline source map comment selection", () => {
         "entry.js": chunk,
       } as unknown as Rolldown.OutputBundle;
 
-      injectRuntimeAndShiftSourceMaps(chunk, bundle, "runtime();\n");
+      injectRuntimeAndShiftSourceMaps(
+        chunk as unknown as import("rollup").OutputChunk,
+        bundle as unknown as import("rollup").OutputBundle,
+        "runtime();\n",
+      );
 
       expect(chunk.code).toContain(
         `const decoy = ${JSON.stringify(decoyUrl)};`,
@@ -69,10 +72,6 @@ async function buildFixture(sourcemap: true | "hidden" | "inline") {
 
   try {
     await mkdir(join(root, "src"));
-    await writeFile(
-      join(root, "index.html"),
-      '<!doctype html><html><head></head><body><script type="module" src="/src/main.js"></script></body></html>',
-    );
     await writeFile(join(root, "src/main.js"), source);
 
     const result = await build({
@@ -84,6 +83,7 @@ async function buildFixture(sourcemap: true | "hidden" | "inline") {
         outDir: "dist",
         sourcemap,
         write: false,
+        rolldownOptions: { input: join(root, "src/main.js") },
       },
     });
     const outputs = Array.isArray(result) ? result : [result];
@@ -93,12 +93,7 @@ async function buildFixture(sourcemap: true | "hidden" | "inline") {
     const chunk = output.find(
       (item): item is OutputChunk => item.type === "chunk" && item.isEntry,
     );
-    const htmlAsset = output.find(
-      (item): item is OutputAsset =>
-        item.type === "asset" && item.fileName.endsWith(".html"),
-    );
-
-    if (!chunk || !htmlAsset) throw new Error("Fixture entry outputs missing");
+    if (!chunk) throw new Error("Fixture entry output missing");
 
     let map: Record<string, unknown>;
     if (sourcemap === "inline") {
@@ -122,11 +117,7 @@ async function buildFixture(sourcemap: true | "hidden" | "inline") {
       map = JSON.parse(mapSource);
     }
 
-    const html =
-      typeof htmlAsset.source === "string"
-        ? htmlAsset.source
-        : Buffer.from(htmlAsset.source).toString("utf8");
-    return { chunk, html, map, source };
+    return { chunk, map, source };
   } finally {
     await rm(root, { recursive: true, force: true });
   }
@@ -134,9 +125,9 @@ async function buildFixture(sourcemap: true | "hidden" | "inline") {
 
 describe("SRI runtime source maps", () => {
   test.each([true, "hidden", "inline"] as const)(
-    "preserves entry mappings and integrity with sourcemap=%s",
+    "preserves entry source maps when a non-HTML runtime is prepended (sourcemap=%s)",
     async (sourcemap) => {
-      const { chunk, html, map, source } = await buildFixture(sourcemap);
+      const { chunk, map, source } = await buildFixture(sourcemap);
       const markerIndex = chunk.code.indexOf("globalThis.sourceMapMarker");
       expect(markerIndex).toBeGreaterThanOrEqual(0);
 
@@ -160,14 +151,8 @@ describe("SRI runtime source maps", () => {
       expect(original.column).toBe(0);
       expect(source.split("\n")[original.line! - 1]).toContain(marker);
 
-      const integrity = html.match(
-        /<script\b[^>]*\bsrc="([^"]+)"[^>]*\bintegrity="(sha256-[^"]+)"/,
-      );
-      expect(integrity).not.toBeNull();
-      const expectedIntegrity = `sha256-${createHash("sha256")
-        .update(Buffer.from(chunk.code))
-        .digest("base64")}`;
-      expect(integrity?.[2]).toBe(expectedIntegrity);
+      expect(chunk.code).toContain('Symbol.for("vite-plugin-csp-guard.sri")');
+      expect(chunk.code.startsWith("(function installSriRuntime")).toBe(true);
     },
   );
 });

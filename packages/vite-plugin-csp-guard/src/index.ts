@@ -38,6 +38,9 @@ import {
   installSriRuntime,
   withBasePathname,
   collectReachableFiles,
+  getHtmlModuleRoots,
+  injectSriBootstrap,
+  addSriBootstrapCspHashes,
 } from "./sri";
 import { injectRuntimeAndShiftSourceMaps } from "./sri/injectRuntime";
 import type { OutputBundle as RollupOutputBundle, OutputChunk } from "rollup";
@@ -268,6 +271,8 @@ export default function vitePluginCSP(
           asset: { type: "asset"; source: string | Buffer };
           html: string;
         }[] = [];
+        const emittedBootstrapSources = new Map<string, string>();
+        const emittedBootstrapHashes = new Set<string>();
 
         try {
           if (debug) console.log("[SRI] Processing bundle for lazy chunk SRI...");
@@ -276,7 +281,32 @@ export default function vitePluginCSP(
           let sriByPathname = buildIntegrityMappings(rollupBundle, algorithm, debug);
           const base = resolvedConfig?.base ?? "/";
 
-          // 2. Inject each entry's reachable-file map before hashing for HTML.
+          const htmlRootChunks = new Set<string>();
+          const asyncHtmlRootChunks = new Set<string>();
+          for (const [fileName, item] of Object.entries(bundle)) {
+            if (
+              !fileName.toLowerCase().endsWith(".html") ||
+              item.type !== "asset"
+            ) {
+              continue;
+            }
+            const html =
+              typeof item.source === "string"
+                ? item.source
+                : Buffer.from(item.source).toString();
+            for (const root of getHtmlModuleRoots(
+              html,
+              fileName,
+              bundle,
+              base,
+            )) {
+              if (root.async) asyncHtmlRootChunks.add(root.fileName);
+              else htmlRootChunks.add(root.fileName);
+            }
+          }
+
+          // 2. Keep a prepend for non-HTML entries and async module roots,
+          // which may execute before their deferred bootstrap script.
           if (sriConfig.runtimePatchDynamicLinks) {
             const runtime = installSriRuntime.toString();
             const relativeBase = base === "./" || base === "";
@@ -288,6 +318,12 @@ export default function vitePluginCSP(
                 : "";
             for (const [fileName, chunk] of Object.entries(bundle)) {
               if (chunk.type !== "chunk" || !chunk.isEntry || !chunk.code) {
+                continue;
+              }
+              if (
+                htmlRootChunks.has(fileName) &&
+                !asyncHtmlRootChunks.has(fileName)
+              ) {
                 continue;
               }
 
@@ -324,7 +360,8 @@ export default function vitePluginCSP(
               }
             }
 
-            // Rebuild integrity map so entry chunks have correct hashes (with runtime)
+            // Rebuild integrity map so any remaining prepended entry runtimes
+            // have final hashes before HTML and bootstrap maps are generated.
             sriByPathname = buildIntegrityMappings(
               rollupBundle,
               algorithm,
@@ -362,7 +399,7 @@ export default function vitePluginCSP(
                 ? asset.source
                 : Buffer.from(asset.source).toString();
 
-            const processed = processHtmlForSri(
+            let processed = processHtmlForSri(
               html,
               sriByPathname,
               dynamicChunkFiles,
@@ -374,7 +411,39 @@ export default function vitePluginCSP(
               fileName,
             );
 
+            if (sriConfig.runtimePatchDynamicLinks) {
+              const assetBaseOption =
+                base.startsWith("//") || /^[a-z][a-z\d+.-]*:\/\//i.test(base)
+                  ? `,assetBase:${JSON.stringify(base)}`
+                  : "";
+              processed = injectSriBootstrap({
+                html: processed,
+                htmlFileName: fileName,
+                bundle,
+                base,
+                assetsDir: resolvedConfig?.build.assetsDir ?? "assets",
+                algorithm,
+                sriByPathname,
+                crossorigin: sriConfig.crossorigin,
+                sriRuntimeOptions,
+                assetBaseOption,
+                getModuleInfo: (id) => this.getModuleInfo(id),
+                filesByModuleId,
+                bootstrapHashes: emittedBootstrapHashes,
+                emitFile: (file) => this.emitFile(file),
+                emittedSources: emittedBootstrapSources,
+              });
+            }
+
             htmlAssets.push({ asset, html: processed });
+          }
+
+          for (const entry of htmlAssets) {
+            entry.html = addSriBootstrapCspHashes(
+              entry.html,
+              emittedBootstrapHashes,
+              !shouldSkip["script-src-elem"],
+            );
           }
         } catch (e) {
           const message = e instanceof Error ? e.message : String(e);

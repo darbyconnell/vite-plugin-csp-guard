@@ -16,6 +16,59 @@ test.use({
 test.describe("SRI integrity", () => {
   sriTest();
 
+  test("early static dependency inserts an integrity-protected stylesheet", async ({ page }) => {
+    await page.goto("/");
+    const link = page.locator('link[data-early-sri="true"]');
+    await expect(link).toHaveAttribute("integrity", /^sha256-/);
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (window as Window & { earlySriStylesheet?: Promise<string> })
+            .earlySriStylesheet,
+        ),
+      )
+      .toBe("load");
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--early-sri-style")
+            .trim(),
+        ),
+      )
+      .toBe("loaded");
+  });
+
+  test("early static dependency rejects a tampered stylesheet before applying it", async ({ page }) => {
+    await page.route(/\/assets\/early-.*\.css(?:\?.*)?$/, (route) =>
+      route.fulfill({
+        contentType: "text/css",
+        body: "html { --early-sri-tampered: applied; }",
+      }),
+    );
+    await page.goto("/");
+
+    const link = page.locator('link[data-early-sri="true"]');
+    await expect(link).toHaveAttribute("integrity", /^sha256-/);
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          (window as Window & { earlySriStylesheet?: Promise<string> })
+            .earlySriStylesheet,
+        ),
+      )
+      .toBe("error");
+    await expect
+      .poll(() =>
+        page.evaluate(() =>
+          getComputedStyle(document.documentElement)
+            .getPropertyValue("--early-sri-tampered")
+            .trim(),
+        ),
+      )
+      .toBe("");
+  });
+
   test("Modulepreload links have integrity", async ({ page }) => {
     await page.goto("/");
 

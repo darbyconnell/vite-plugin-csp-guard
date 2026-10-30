@@ -101,7 +101,7 @@ describe.each(["./", "", "/", "/app/"])("SRI with base %j", (base) => {
     for (const [htmlFile, relativePrefix] of [
       ["index.html", "./assets/"],
       ["sub/index.html", "../assets/"],
-    ]) {
+    ] as const) {
       const expectedPrefix = relativeBase
         ? relativePrefix
         : expectedAbsolutePrefix;
@@ -137,17 +137,34 @@ describe.each(["./", "", "/", "/app/"])("SRI with base %j", (base) => {
       }
       const htmlUrl = new URL(htmlFile, "http://localhost/");
       const entryPathname = new URL(scriptSrc!, htmlUrl).pathname;
-      const deploymentRoot = new URL(base || "./", "http://localhost/").pathname;
+      const deploymentRoot = new URL(base || "./", "http://localhost/")
+        .pathname;
       const entryFile = path.posix.normalize(
         path.posix.relative(deploymentRoot, entryPathname),
       );
       entryFiles.add(entryFile);
       const entryCode = await readFile(path.join(outDir, entryFile), "utf8");
-      const depth = (entryFile.match(/\//g) || []).length;
-      const runtimeRoot = `root:new URL(${JSON.stringify(
-        "../".repeat(depth) || "./",
-      )}, import.meta.url).href`;
-      if (relativeBase) expect(entryCode).toContain(runtimeRoot);
+      expect(entryCode).not.toContain("vite-plugin-csp-guard.sri");
+
+      const bootstrapScript = $("script[defer][integrity]").first();
+      const bootstrapHref = bootstrapScript.attr("src");
+      expect(bootstrapHref).toBeTruthy();
+      expect(bootstrapHref).toMatch(
+        new RegExp(`^${expectedPrefix.replaceAll(".", "\\.")}csp-guard-sri-`),
+      );
+      const bootstrapFile = path.posix.join(
+        "assets",
+        bootstrapHref!.split("/").pop()!,
+      );
+      const bootstrapCode = await readFile(
+        path.join(outDir, bootstrapFile),
+        "utf8",
+      );
+      if (relativeBase) {
+        expect(bootstrapCode).toContain(
+          'root:new URL("../",(document.currentScript && document.currentScript.src) || document.baseURI).href',
+        );
+      }
     }
     expect(entryFiles.size).toBe(2);
   });
