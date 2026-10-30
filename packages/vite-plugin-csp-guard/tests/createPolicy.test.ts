@@ -1,7 +1,17 @@
 import { describe, expect, test } from "vitest";
-import { definePolicy, self, unsafeEval, type DefinedPolicy } from "csp-toolkit";
+import {
+  definePolicy,
+  hash,
+  nonce,
+  self,
+  strictDynamic,
+  unsafeEval,
+  unsafeInline,
+  type CSPPolicy,
+  type DefinedPolicy,
+} from "csp-toolkit";
 import { generatePolicyString } from "../src/policy/createPolicy";
-import { createNewCollection } from "../src/policy/core";
+import { calculateSkip, createNewCollection } from "../src/policy/core";
 import { cspKeywordForm } from "../src/policy/keywordForm";
 
 /**
@@ -18,8 +28,8 @@ function directiveSources(csp: string, name: string): string[] {
   return entry.slice(name.length + 1).trim().split(/\s+/);
 }
 
-describe("generatePolicyString — elem directive inheritance from parent", () => {
-  test("inherits external URLs from script-src into script-src-elem when hashes are present", () => {
+describe("generatePolicyString — element directive source semantics", () => {
+  test("does not inherit script-src sources into an explicit script-src-elem", () => {
     const collection = createNewCollection();
     collection["script-src-elem"].set("sha256-dummy", {
       algorithm: "sha256",
@@ -32,13 +42,12 @@ describe("generatePolicyString — elem directive inheritance from parent", () =
       scriptSrc: [self, "https://js.stripe.com", "https://js.sentry-cdn.com"],
     });
 
-    const out = generatePolicyString({ collection, policy });
+    const out = generatePolicyString({ collection, policy, userPolicy: policy });
     const src = directiveSources(out, "script-src-elem");
-    expect(src).toContain("https://js.stripe.com");
-    expect(src).toContain("https://js.sentry-cdn.com");
+    expect(src).toEqual([cspKeywordForm(self), "'sha256-dummy'"]);
   });
 
-  test("inherits external URLs from style-src into style-src-elem when hashes are present", () => {
+  test("does not inherit style-src sources into an explicit style-src-elem", () => {
     const collection = createNewCollection();
     collection["style-src-elem"].set("sha256-dummy", {
       algorithm: "sha256",
@@ -51,13 +60,12 @@ describe("generatePolicyString — elem directive inheritance from parent", () =
       styleSrc: [self, "https://fonts.googleapis.com", "https://example.com"],
     });
 
-    const out = generatePolicyString({ collection, policy });
+    const out = generatePolicyString({ collection, policy, userPolicy: policy });
     const src = directiveSources(out, "style-src-elem");
-    expect(src).toContain("https://fonts.googleapis.com");
-    expect(src).toContain("https://example.com");
+    expect(src).toEqual([cspKeywordForm(self), "'sha256-dummy'"]);
   });
 
-  test("does not copy 'unsafe-eval' from script-src into script-src-elem", () => {
+  test("default element directives inherit parent sources, except unsafe-eval", () => {
     const collection = createNewCollection();
     collection["script-src-elem"].set("sha256-dummy", {
       algorithm: "sha256",
@@ -67,17 +75,144 @@ describe("generatePolicyString — elem directive inheritance from parent", () =
     const policy: DefinedPolicy = definePolicy({
       defaultSrc: [self],
       scriptSrcElem: [self],
-      scriptSrc: [self, unsafeEval, "https://allowed.example.test"],
+      scriptSrc: [self, strictDynamic, unsafeEval, "https://allowed.example.test"],
+    });
+    const userPolicy: DefinedPolicy = definePolicy({
+      scriptSrc: [self, strictDynamic, unsafeEval, "https://allowed.example.test"],
+    });
+
+    const out = generatePolicyString({ collection, policy, userPolicy });
+    const src = directiveSources(out, "script-src-elem");
+    expect(src).toContain("https://allowed.example.test");
+    expect(src).toContain(cspKeywordForm(strictDynamic));
+    expect(src).not.toContain(cspKeywordForm(unsafeEval));
+    expect(src).toContain("'sha256-dummy'");
+  });
+
+  test("an explicitly empty element directive does not inherit parent sources", () => {
+    const collection = createNewCollection();
+    collection["script-src-elem"].set("sha256-dummy", {
+      algorithm: "sha256",
+      content: "",
+    });
+    const policy: CSPPolicy = {
+      "script-src-elem": [],
+      "script-src": ["https://parent-only.example"],
+    };
+
+    const out = generatePolicyString({
+      collection,
+      policy,
+      userPolicy: { "script-src-elem": [] },
+    });
+    const src = directiveSources(out, "script-src-elem");
+    expect(src).toEqual(["'sha256-dummy'"]);
+    expect(src).not.toContain("https://parent-only.example");
+  });
+
+  test("a missing element directive inherits from its parent directive", () => {
+    const collection = createNewCollection();
+    collection["script-src-elem"].set("sha256-dummy", {
+      algorithm: "sha256",
+      content: "",
+    });
+    const policy: DefinedPolicy = definePolicy({
+      defaultSrc: [self],
+      scriptSrc: [self, "https://parent.example"],
     });
 
     const out = generatePolicyString({ collection, policy });
     const src = directiveSources(out, "script-src-elem");
-    expect(src).toContain("https://allowed.example.test");
-    expect(src).not.toContain(cspKeywordForm(unsafeEval));
+    expect(src).toContain(cspKeywordForm(self));
+    expect(src).toContain("https://parent.example");
+    expect(src).toContain("'sha256-dummy'");
+  });
+
+  test("a missing element and parent directive inherit from default-src", () => {
+    const collection = createNewCollection();
+    collection["script-src-elem"].set("sha256-dummy", {
+      algorithm: "sha256",
+      content: "",
+    });
+    const policy: DefinedPolicy = definePolicy({
+      defaultSrc: [self, "https://fallback.example"],
+    });
+
+    const out = generatePolicyString({ collection, policy });
+    const src = directiveSources(out, "script-src-elem");
+    expect(src).toContain(cspKeywordForm(self));
+    expect(src).toContain("https://fallback.example");
+    expect(src).toContain("'sha256-dummy'");
+  });
+
+  test("does not add hashes when inherited default-src only allows unsafe-inline", () => {
+    const collection = createNewCollection();
+    collection["script-src-elem"].set("sha256-dummy", {
+      algorithm: "sha256",
+      content: "",
+    });
+    const policy: DefinedPolicy = definePolicy({
+      defaultSrc: [unsafeInline],
+    });
+
+    const out = generatePolicyString({ collection, policy });
+    expect(directiveSources(out, "script-src-elem")).toEqual([]);
+  });
+
+  test("does not add hashes when unsafe-inline is the only relevant source", () => {
+    const collection = createNewCollection();
+    collection["script-src-elem"].set("sha256-dummy", {
+      algorithm: "sha256",
+      content: "",
+    });
+    const policy: DefinedPolicy = definePolicy({
+      scriptSrcElem: [unsafeInline],
+    });
+
+    const out = generatePolicyString({ collection, policy });
+    expect(directiveSources(out, "script-src-elem")).toEqual([
+      cspKeywordForm(unsafeInline),
+    ]);
+  });
+
+  test.each([
+    ["hash", hash("sha256", "author-hash")],
+    ["nonce", nonce("author-nonce")],
+  ])("adds generated hashes with unsafe-inline and an existing %s", (_kind, existingSource) => {
+    const collection = createNewCollection();
+    collection["script-src-elem"].set("sha256-generated", {
+      algorithm: "sha256",
+      content: "",
+    });
+    const policy: CSPPolicy = {
+      "script-src-elem": [cspKeywordForm(unsafeInline), existingSource],
+    };
+
+    const out = generatePolicyString({ collection, policy });
+    const src = directiveSources(out, "script-src-elem");
+    expect(src).toContain(existingSource);
+    expect(src).toContain("'sha256-generated'");
+  });
+
+  test("adds generated hashes with unsafe-inline and strict-dynamic", () => {
+    const collection = createNewCollection();
+    collection["script-src-elem"].set("sha256-generated", {
+      algorithm: "sha256",
+      content: "",
+    });
+    const policy: DefinedPolicy = definePolicy({
+      scriptSrcElem: [unsafeInline, strictDynamic],
+    });
+
+    const out = generatePolicyString({ collection, policy });
+    const src = directiveSources(out, "script-src-elem");
+    expect(src).toContain(cspKeywordForm(strictDynamic));
+    expect(src).toContain("'sha256-generated'");
   });
 
   test("does not duplicate a source already on script-src-elem", () => {
     const url = "https://shared.example.test";
+    const parentOnlyUrl = "https://parent-only.example.test";
     const collection = createNewCollection();
     collection["script-src-elem"].set("sha256-dummy", {
       algorithm: "sha256",
@@ -87,13 +222,14 @@ describe("generatePolicyString — elem directive inheritance from parent", () =
     const policy: DefinedPolicy = definePolicy({
       defaultSrc: [self],
       scriptSrcElem: [self, url],
-      scriptSrc: [self, url],
+      scriptSrc: [self, url, parentOnlyUrl],
     });
 
     const out = generatePolicyString({ collection, policy });
     const count = directiveSources(out, "script-src-elem").filter((s) => s === url)
       .length;
     expect(count).toBe(1);
+    expect(directiveSources(out, "script-src-elem")).toContain(parentOnlyUrl);
   });
 
   test("when script-src-elem has no generated hashes, does not pull sources from script-src", () => {
@@ -110,5 +246,32 @@ describe("generatePolicyString — elem directive inheritance from parent", () =
     const src = directiveSources(out, "script-src-elem");
     expect(src).toEqual([cspKeywordForm(self)]);
     expect(src).not.toContain("https://not-inherited.example.test");
+  });
+
+  test("calculateSkip ignores unsafe-eval but skips unsafe-inline without nonce or hash", () => {
+    expect(
+      calculateSkip(
+        definePolicy({ scriptSrcElem: [self, unsafeEval] }),
+      )["script-src-elem"],
+    ).toBe(false);
+    expect(
+      calculateSkip(
+        definePolicy({ scriptSrcElem: [self, unsafeInline] }),
+      )["script-src-elem"],
+    ).toBe(true);
+  });
+
+  test("calculateSkip does not skip unsafe-inline with a hash, nonce, or strict-dynamic", () => {
+    for (const source of [
+      hash("sha256", "source"),
+      nonce("source"),
+      cspKeywordForm(strictDynamic),
+    ]) {
+      expect(
+        calculateSkip({
+          "script-src-elem": [cspKeywordForm(unsafeInline), source],
+        })["script-src-elem"],
+      ).toBe(false);
+    }
   });
 });

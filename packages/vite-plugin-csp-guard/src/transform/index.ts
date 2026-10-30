@@ -175,6 +175,7 @@ export const transformIndexHtmlHandler = ({
   const rawPolicy = generatePolicyString({
     collection: updatedCollection,
     policy: policy,
+    userPolicy: cspContext.options.policy,
   });
 
   if (transformPolicy && bundle && sri) {

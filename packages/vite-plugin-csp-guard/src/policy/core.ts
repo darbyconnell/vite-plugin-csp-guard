@@ -10,7 +10,7 @@ import {
 import crypto from "crypto";
 import { isExternalSource, isSourceInPolicy } from "../utils";
 import { type CSPPolicy, type DefinedPolicy } from "csp-toolkit";
-import { policyHasUnsafeEval, policyHasUnsafeInline } from "./keywordForm";
+import { policyHasUnsafeInline } from "./keywordForm";
 
 /**
  * Used for hash data storage
@@ -109,7 +109,7 @@ export const calculateSkip = (
 
   keysToCheck.forEach((key) => {
     const sources = policy[key];
-    if (policyHasUnsafeInline(sources) || policyHasUnsafeEval(sources)) {
+    if (policyHasUnsafeInline(sources)) {
       defaultShouldSkip[key] = true;
     }
   });
