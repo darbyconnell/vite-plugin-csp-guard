@@ -28,14 +28,17 @@ export const createNewCollection = (): HashCollection => {
 };
 
 /**
- * Take a string and generate a hash
- * @param str - The string to hash
+ * Take string or byte data and generate a hash
+ * @param source - The string or bytes to hash
  * @param algorithm - The algorithm to use
  * @returns
  */
-export const generateHash = (str: string, algorithm: HashAlgorithms) => {
+export const generateHash = (
+  source: string | Uint8Array,
+  algorithm: HashAlgorithms,
+) => {
   const hash = crypto.createHash(algorithm);
-  hash.update(str);
+  hash.update(source);
   return hash.digest("base64");
 };
 
