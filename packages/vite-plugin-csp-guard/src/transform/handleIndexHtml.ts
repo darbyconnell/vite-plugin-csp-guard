@@ -80,6 +80,19 @@ export function handleIndexHtml({
     }
   });
 
+  // Inline Styles
+  $("style").each(function (i, el) {
+    const txt = $(el).text();
+    if (txt.length) {
+      const hash = generateHash(txt, algorithm);
+      addHash({
+        hash,
+        key: "style-src-elem",
+        data: { algorithm, content: txt },
+        collection: HASH_COLLECTION,
+      });
+    }
+  });
 
   // TODO: Maybe we don't need this if we are just using 'self' anyway in the policy?
   // $("link").each(function (i, el) {
