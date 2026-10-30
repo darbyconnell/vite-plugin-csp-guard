@@ -44,6 +44,10 @@ import {
   addSriBootstrapCspHashes,
 } from "./sri";
 import { injectRuntimeAndShiftSourceMaps } from "./sri/injectRuntime";
+import {
+  emitRuntimeAsset,
+  type EmittedSriAsset,
+} from "./sri/emitRuntimeAsset";
 import type { OutputBundle as RollupOutputBundle, OutputChunk } from "rollup";
 
 export default function vitePluginCSP(
@@ -272,7 +276,8 @@ export default function vitePluginCSP(
           asset: { type: "asset"; source: string | Buffer };
           html: string;
         }[] = [];
-        const emittedSources = new Map<string, string>();
+        const emittedSources = new Map<string, EmittedSriAsset>();
+        const emittedPaths = new Map<string, string>();
         const emittedBootstrapHashes = new Set<string>();
 
         try {
@@ -344,43 +349,37 @@ export default function vitePluginCSP(
 
               if (_options.format === "es") {
                 const assetsDir = resolvedConfig?.build.assetsDir ?? "assets";
-                if (relativeBase) {
-                  // The runtime module resolves relative deployments from its
-                  // own emitted URL, not from the entry importing it.
-                  const runtimeModulePath = path.posix.join(
+                const runtimeModule = emitRuntimeAsset({
+                  name: "csp-guard-sri-module.js",
+                  fallbackFileName: path.posix.join(
                     assetsDir,
                     "csp-guard-sri-module.js",
-                  );
-                  const root = `new URL(${JSON.stringify(
-                    "../".repeat((runtimeModulePath.match(/\//g) || []).length) || "./",
-                  )}, import.meta.url).href`;
-                  options = `${options.slice(0, -1)},root:${root}}`;
-                }
-                const runtimeModuleSource = `(${runtime})(${map},${options});`;
-                const contentHash = generateHash(runtimeModuleSource, algorithm);
-                const shortContentHash = contentHash
-                  .replace(/\+/g, "-")
-                  .replace(/\//g, "_")
-                  .replace(/=+$/, "")
-                  .slice(0, 12);
-                const runtimeModuleFileName = path.posix.join(
-                  assetsDir,
-                  `csp-guard-sri-module-${shortContentHash}.js`,
-                );
-                const priorSource = emittedSources.get(runtimeModuleFileName);
-                if (priorSource && priorSource !== runtimeModuleSource) {
-                  throw new Error(
-                    `SRI runtime module filename collision: ${runtimeModuleFileName}`,
-                  );
-                }
-                if (!priorSource) {
-                  this.emitFile({
-                    type: "asset",
-                    fileName: runtimeModuleFileName,
-                    source: runtimeModuleSource,
-                  });
-                  emittedSources.set(runtimeModuleFileName, runtimeModuleSource);
-                }
+                  ),
+                  assetFileNames: _options.assetFileNames,
+                  sourceForFileName: (runtimeModuleFileName) => {
+                    let runtimeOptions = `${sriRuntimeOptions.slice(0, -1)}${assetBaseOption}}`;
+                    if (relativeBase) {
+                      // Resolve from the runtime module's final output path.
+                      const depth =
+                        (runtimeModuleFileName.match(/\//g) || []).length;
+                      const root = `new URL(${JSON.stringify(
+                        "../".repeat(depth) || "./",
+                      )}, import.meta.url).href`;
+                      runtimeOptions = `${runtimeOptions.slice(0, -1)},root:${root}}`;
+                    }
+                    return `(${runtime})(${map},${runtimeOptions});`;
+                  },
+                  emitFile: (asset) => {
+                    const referenceId = this.emitFile(asset);
+                    return {
+                      referenceId,
+                      fileName: this.getFileName(referenceId),
+                    };
+                  },
+                  emittedSources,
+                  emittedPaths,
+                });
+                const runtimeModuleFileName = runtimeModule.fileName;
 
                 const relativeRuntimePath = path.posix.relative(
                   path.posix.dirname(fileName),
@@ -474,6 +473,7 @@ export default function vitePluginCSP(
                 html: processed,
                 htmlFileName: fileName,
                 bundle,
+                assetFileNames: _options.assetFileNames,
                 base,
                 assetsDir: resolvedConfig?.build.assetsDir ?? "assets",
                 algorithm,
@@ -484,8 +484,15 @@ export default function vitePluginCSP(
                 getModuleInfo: (id) => this.getModuleInfo(id),
                 filesByModuleId,
                 bootstrapHashes: emittedBootstrapHashes,
-                emitFile: (file) => this.emitFile(file),
+                emitFile: (asset) => {
+                  const referenceId = this.emitFile(asset);
+                  return {
+                    referenceId,
+                    fileName: this.getFileName(referenceId),
+                  };
+                },
                 emittedSources,
+                emittedPaths,
               });
             }
 
