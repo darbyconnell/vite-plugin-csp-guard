@@ -7,6 +7,11 @@ import { installSriRuntime } from "../../../../packages/vite-plugin-csp-guard/sr
 const integrityFor = (content: string) =>
   `sha256-${createHash("sha256").update(content).digest("base64")}`;
 
+// Chrome 142+ gates loopback requests behind Local Network Access; keep CORS checks enabled.
+test.use({
+  launchOptions: { args: ["--disable-features=LocalNetworkAccessChecks"] },
+});
+
 // SRI tests - only run in preview (build) mode since SRI is a build-time feature
 test.describe("SRI integrity", () => {
   sriTest();
