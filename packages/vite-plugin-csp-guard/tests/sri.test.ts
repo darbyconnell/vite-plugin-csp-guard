@@ -3,7 +3,7 @@ import { afterAll, beforeAll, describe, expect, test } from "vitest";
 import { build, type Rolldown } from "vite";
 import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { extname, join, posix } from "node:path";
 import vitePluginCSP from "../src/index";
 import { generateHash } from "../src/policy/core";
 import { processHtmlForSri } from "../src/sri/processHtml";
@@ -41,6 +41,8 @@ async function buildFixture(
   options: MyPluginOptions | null,
   config: {
     base?: string;
+    assetFileNames?: string | ((asset: { name?: string }) => string);
+    chunkFileNames?: string;
     entryFileNames?: string;
     input?: Record<string, string>;
     library?: boolean | "cjs";
@@ -64,12 +66,23 @@ async function buildFixture(
             },
           }
         : {}),
-      ...(config.entryFileNames || config.input
+      ...(config.entryFileNames ||
+      config.chunkFileNames ||
+      config.assetFileNames ||
+      config.input
         ? {
             rolldownOptions: {
-              ...(config.entryFileNames
-                ? { output: { entryFileNames: config.entryFileNames } }
-                : {}),
+              output: {
+                ...(config.entryFileNames
+                  ? { entryFileNames: config.entryFileNames }
+                  : {}),
+                ...(config.chunkFileNames
+                  ? { chunkFileNames: config.chunkFileNames }
+                  : {}),
+                ...(config.assetFileNames
+                  ? { assetFileNames: config.assetFileNames }
+                  : {}),
+              },
               ...(config.input ? { input: config.input } : {}),
             },
           }
@@ -104,6 +117,18 @@ async function buildFixture(
 }
 
 type FixtureBuild = Awaited<ReturnType<typeof buildFixture>>;
+
+const assetFileNamesByExtension = (asset: { name?: string }) => {
+  const extension = extname(asset.name ?? "").slice(1) || "assets";
+  return `${extension}/[name]-[hash][extname]`;
+};
+
+const nestedJsAssetFileNames = (asset: { name?: string }) => {
+  const extension = extname(asset.name ?? "").slice(1) || "assets";
+  return extension === "js"
+    ? "js/runtime/[name]-[hash][extname]"
+    : `${extension}/[name]-[hash][extname]`;
+};
 
 function chunkNames(result: FixtureBuild): Record<string, string> {
   return Object.fromEntries(
@@ -338,6 +363,7 @@ describe("HTML SRI runtime bootstrap maps", () => {
       ),
     ).toHaveLength(1);
     expect(bootstrapScript.attr("src")).toContain(bootstrap!.fileName);
+    expect(bootstrap!.fileName).toMatch(/^assets\/csp-guard-sri-/);
     expect(bootstrapScript.attr("integrity")).toBe(bootstrapHash);
     expect(bootstrapScript.attr("crossorigin")).toBe("anonymous");
     expect(bootstrapScript.index()).toBeLessThan(moduleScript.index());
@@ -455,6 +481,9 @@ describe("HTML SRI runtime bootstrap maps", () => {
       );
       expect(entries).toHaveLength(2);
       expect(runtimeModules).toHaveLength(1);
+      expect(runtimeModules[0]!.fileName).toMatch(
+        /^assets\/csp-guard-sri-module-/,
+      );
       const runtimeSource = String(runtimeModules[0]!.source);
       expect(runtimeSource).not.toMatch(/^\s*import\s/m);
       expect(runtimeSource).toContain("shared-");
@@ -479,6 +508,114 @@ describe("HTML SRI runtime bootstrap maps", () => {
     } finally {
       await rm(entryRoot, { recursive: true, force: true });
     }
+  }, 30000);
+
+  test("custom assetFileNames controls HTML bootstrap and ES runtime module paths", async () => {
+    const htmlResult = await buildFixture(
+      root,
+      { algorithm: "sha256", build: { sri: true } },
+      {
+        base: "/",
+        assetFileNames: assetFileNamesByExtension,
+        entryFileNames: "js/[name]-[hash].js",
+        chunkFileNames: "js/[name]-[hash].js",
+      },
+    );
+    const bootstrap = bootstrapAsset(htmlResult);
+    const bootstrapScript = htmlResult.$("script[defer][integrity]").first();
+    expect(bootstrap).toBeDefined();
+    expect(bootstrap!.fileName).toMatch(/^js\/csp-guard-sri-/);
+    expect(bootstrapScript.attr("src")).toBe(`/${bootstrap!.fileName}`);
+    const htmlCss = htmlResult.output.find(
+      (item): item is Rolldown.OutputAsset =>
+        item.type === "asset" && item.fileName.endsWith(".css"),
+    );
+    expect(htmlCss?.fileName).toMatch(/^css\//);
+
+    const entryResult = await buildFixture(
+      root,
+      { algorithm: "sha256", build: { sri: true } },
+      {
+        assetFileNames: assetFileNamesByExtension,
+        entryFileNames: "js/[name]-[hash].js",
+        chunkFileNames: "js/[name]-[hash].js",
+        input: { main: join(root, "main.js") },
+      },
+    );
+    const runtimeModule = entryResult.output.find(
+      (item): item is Rolldown.OutputAsset =>
+        item.type === "asset" &&
+        /csp-guard-sri-module-.*\.js$/.test(item.fileName),
+    );
+    expect(runtimeModule).toBeDefined();
+    expect(runtimeModule!.fileName).toMatch(/^js\/csp-guard-sri-module-/);
+    const css = entryResult.output.find(
+      (item): item is Rolldown.OutputAsset =>
+        item.type === "asset" && item.fileName.endsWith(".css"),
+    );
+    expect(css?.fileName).toMatch(/^css\//);
+    expect(String(runtimeModule!.source)).toContain(
+      runtimeMapPair(
+        css!.fileName,
+        `sha256-${generateHash(String(css!.source), "sha256")}`,
+      ),
+    );
+    expect(entryResult.entry.code.split("\n", 1)[0]).toBe(
+      `import "./${posix.basename(runtimeModule!.fileName)}";`,
+    );
+    expect(entryResult.entry.imports).toContain(runtimeModule!.fileName);
+  }, 30000);
+
+  test("relative bases use final nested assetFileNames paths for runtime roots", async () => {
+    const htmlResult = await buildFixture(
+      root,
+      { algorithm: "sha256", build: { sri: true } },
+      {
+        base: "./",
+        assetFileNames: nestedJsAssetFileNames,
+        entryFileNames: "js/[name]-[hash].js",
+        chunkFileNames: "js/[name]-[hash].js",
+      },
+    );
+    const bootstrap = bootstrapAsset(htmlResult);
+    expect(bootstrap).toBeDefined();
+    expect(bootstrap!.fileName).toMatch(/^js\/runtime\/csp-guard-sri-/);
+    expect(
+      htmlResult.output
+        .filter(
+          (item) =>
+            item.type === "asset" &&
+            /csp-guard-sri-.*\.js$/.test(item.fileName),
+        )
+        .map((item) => item.fileName),
+    ).toHaveLength(1);
+    expect(String(bootstrap!.source)).toContain(
+      'new URL("../../",(document.currentScript && document.currentScript.src) || document.baseURI).href',
+    );
+
+    const entryResult = await buildFixture(
+      root,
+      { algorithm: "sha256", build: { sri: true } },
+      {
+        base: "./",
+        assetFileNames: nestedJsAssetFileNames,
+        entryFileNames: "js/[name]-[hash].js",
+        chunkFileNames: "js/[name]-[hash].js",
+        input: { main: join(root, "main.js") },
+      },
+    );
+    const runtimeModule = entryResult.output.find(
+      (item): item is Rolldown.OutputAsset =>
+        item.type === "asset" &&
+        /csp-guard-sri-module-.*\.js$/.test(item.fileName),
+    );
+    expect(runtimeModule).toBeDefined();
+    expect(runtimeModule!.fileName).toMatch(
+      /^js\/runtime\/csp-guard-sri-module-/,
+    );
+    expect(String(runtimeModule!.source)).toContain(
+      'new URL("../../", import.meta.url).href',
+    );
   }, 30000);
 
   test("relative-base ES runtime module resolves its root from import.meta.url", async () => {

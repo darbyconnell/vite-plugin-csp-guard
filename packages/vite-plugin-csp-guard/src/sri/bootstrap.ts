@@ -6,6 +6,11 @@ import { generateHash } from "../policy/core";
 import { policyHasUnsafeInline } from "../policy/keywordForm";
 import { collectReachableFiles } from "./reachableFiles";
 import { withBasePathname } from "./processHtml";
+import {
+  emitRuntimeAsset,
+  type EmittedSriAsset,
+  type EmitSriAsset,
+} from "./emitRuntimeAsset";
 import { installSriRuntime } from "./runtime";
 
 const FAKE_ORIGIN = "http://vite-plugin-csp-guard.invalid";
@@ -167,6 +172,7 @@ export type SriBootstrapOptions = {
   html: string;
   htmlFileName: string;
   bundle: Rolldown.OutputBundle;
+  assetFileNames: unknown;
   base: string;
   assetsDir: string;
   algorithm: HashAlgorithms;
@@ -177,8 +183,9 @@ export type SriBootstrapOptions = {
   getModuleInfo: (id: string) => Rolldown.ModuleInfo | null;
   filesByModuleId: Map<string, string[]>;
   bootstrapHashes: Set<string>;
-  emitFile: (file: { type: "asset"; fileName: string; source: string }) => void;
-  emittedSources: Map<string, string>;
+  emitFile: EmitSriAsset;
+  emittedSources: Map<string, EmittedSriAsset>;
+  emittedPaths: Map<string, string>;
 };
 
 /** Emit and link a classic runtime script before the page's module graph starts. */
@@ -187,6 +194,7 @@ export function injectSriBootstrap(options: SriBootstrapOptions): string {
     html,
     htmlFileName,
     bundle,
+    assetFileNames,
     base,
     assetsDir,
     algorithm,
@@ -199,6 +207,7 @@ export function injectSriBootstrap(options: SriBootstrapOptions): string {
     bootstrapHashes,
     emitFile,
     emittedSources,
+    emittedPaths,
   } = options;
   const roots = getHtmlModuleRoots(html, htmlFileName, bundle, base);
   if (!roots.length) return html;
@@ -216,35 +225,26 @@ export function injectSriBootstrap(options: SriBootstrapOptions): string {
     }
   }
   const map = JSON.stringify(withBasePathname(entryMap, base));
-  let runtimeOptions = `${sriRuntimeOptions.slice(0, -1)}${assetBaseOption}}`;
-  if (isRelativeBase(base)) {
-    const normalizedAssetsDir = path.posix.normalize(assetsDir);
-    const bootstrapDepth =
-      normalizedAssetsDir === "."
-        ? 0
-        : normalizedAssetsDir.split("/").filter(Boolean).length;
-    const root = `new URL(${JSON.stringify("../".repeat(bootstrapDepth) || "./")},(document.currentScript && document.currentScript.src) || document.baseURI).href`;
-    runtimeOptions = `${runtimeOptions.slice(0, -1)},root:${root}}`;
-  }
-  const source = `(${installSriRuntime.toString()})(${map},${runtimeOptions});`;
+  const sourceForFileName = (fileName: string) => {
+    let runtimeOptions = `${sriRuntimeOptions.slice(0, -1)}${assetBaseOption}}`;
+    if (isRelativeBase(base)) {
+      const bootstrapDepth = (fileName.match(/\//g) || []).length;
+      const root = `new URL(${JSON.stringify("../".repeat(bootstrapDepth) || "./")},(document.currentScript && document.currentScript.src) || document.baseURI).href`;
+      runtimeOptions = `${runtimeOptions.slice(0, -1)},root:${root}}`;
+    }
+    return `(${installSriRuntime.toString()})(${map},${runtimeOptions});`;
+  };
+  const emitted = emitRuntimeAsset({
+    name: "csp-guard-sri.js",
+    fallbackFileName: path.posix.join(assetsDir, "csp-guard-sri.js"),
+    assetFileNames,
+    sourceForFileName,
+    emitFile,
+    emittedSources,
+    emittedPaths,
+  });
+  const { fileName: bootstrapFileName, source } = emitted;
   const contentHash = generateHash(source, algorithm);
-  const shortContentHash = contentHash
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "")
-    .slice(0, 12);
-  const bootstrapFileName = path.posix.join(
-    assetsDir,
-    `csp-guard-sri-${shortContentHash}.js`,
-  );
-  const priorSource = emittedSources.get(bootstrapFileName);
-  if (priorSource && priorSource !== source) {
-    throw new Error(`SRI bootstrap filename collision: ${bootstrapFileName}`);
-  }
-  if (!priorSource) {
-    emitFile({ type: "asset", fileName: bootstrapFileName, source });
-    emittedSources.set(bootstrapFileName, source);
-  }
 
   const integrity = `${algorithm}-${contentHash}`;
   bootstrapHashes.add(integrity);
