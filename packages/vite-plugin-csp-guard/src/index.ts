@@ -38,6 +38,8 @@ import {
   installSriRuntime,
   withBasePathname,
   collectReachableFiles,
+  getHtmlModuleRootChunks,
+  injectSriBootstrap,
 } from "./sri";
 import { injectRuntimeAndShiftSourceMaps } from "./sri/injectRuntime";
 import type { OutputBundle as RollupOutputBundle, OutputChunk } from "rollup";
@@ -268,6 +270,7 @@ export default function vitePluginCSP(
           asset: { type: "asset"; source: string | Buffer };
           html: string;
         }[] = [];
+        const emittedBootstrapSources = new Map<string, string>();
 
         try {
           if (debug) console.log("[SRI] Processing bundle for lazy chunk SRI...");
@@ -276,7 +279,29 @@ export default function vitePluginCSP(
           let sriByPathname = buildIntegrityMappings(rollupBundle, algorithm, debug);
           const base = resolvedConfig?.base ?? "/";
 
-          // 2. Inject each entry's reachable-file map before hashing for HTML.
+          const htmlRootChunks = new Set<string>();
+          for (const [fileName, item] of Object.entries(bundle)) {
+            if (
+              !fileName.toLowerCase().endsWith(".html") ||
+              item.type !== "asset"
+            ) {
+              continue;
+            }
+            const html =
+              typeof item.source === "string"
+                ? item.source
+                : Buffer.from(item.source).toString();
+            for (const root of getHtmlModuleRootChunks(
+              html,
+              fileName,
+              bundle,
+              base,
+            )) {
+              htmlRootChunks.add(root);
+            }
+          }
+
+          // 2. Keep a prepended runtime only for entries that no HTML page loads.
           if (sriConfig.runtimePatchDynamicLinks) {
             const runtime = installSriRuntime.toString();
             const relativeBase = base === "./" || base === "";
@@ -290,6 +315,7 @@ export default function vitePluginCSP(
               if (chunk.type !== "chunk" || !chunk.isEntry || !chunk.code) {
                 continue;
               }
+              if (htmlRootChunks.has(fileName)) continue;
 
               const entryMap: Record<string, string> = {};
               for (const file of collectReachableFiles(
@@ -324,7 +350,8 @@ export default function vitePluginCSP(
               }
             }
 
-            // Rebuild integrity map so entry chunks have correct hashes (with runtime)
+            // Rebuild integrity map so any remaining prepended entry runtimes
+            // have final hashes before HTML and bootstrap maps are generated.
             sriByPathname = buildIntegrityMappings(
               rollupBundle,
               algorithm,
@@ -362,7 +389,7 @@ export default function vitePluginCSP(
                 ? asset.source
                 : Buffer.from(asset.source).toString();
 
-            const processed = processHtmlForSri(
+            let processed = processHtmlForSri(
               html,
               sriByPathname,
               dynamicChunkFiles,
@@ -373,6 +400,30 @@ export default function vitePluginCSP(
               hashReplacements,
               fileName,
             );
+
+            if (sriConfig.runtimePatchDynamicLinks) {
+              const assetBaseOption =
+                base.startsWith("//") || /^[a-z][a-z\d+.-]*:\/\//i.test(base)
+                  ? `,assetBase:${JSON.stringify(base)}`
+                  : "";
+              processed = injectSriBootstrap({
+                html: processed,
+                htmlFileName: fileName,
+                bundle,
+                base,
+                assetsDir: resolvedConfig?.build.assetsDir ?? "assets",
+                algorithm,
+                sriByPathname,
+                crossorigin: sriConfig.crossorigin,
+                shouldAddCspHash: !shouldSkip["script-src-elem"],
+                sriRuntimeOptions,
+                assetBaseOption,
+                getModuleInfo: (id) => this.getModuleInfo(id),
+                filesByModuleId,
+                emitFile: (file) => this.emitFile(file),
+                emittedSources: emittedBootstrapSources,
+              });
+            }
 
             htmlAssets.push({ asset, html: processed });
           }

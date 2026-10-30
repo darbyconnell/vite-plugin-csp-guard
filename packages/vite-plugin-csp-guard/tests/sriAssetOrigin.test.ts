@@ -131,7 +131,7 @@ describe("processHtmlForSri asset-origin matching", () => {
   });
 });
 
-test("runtime injection includes a full-URL asset base", async () => {
+test("runtime bootstrap includes a full-URL asset base", async () => {
   const tempDir = await realpath(
     await mkdtemp(path.join(os.tmpdir(), "csp-guard-asset-base-")),
   );
@@ -156,8 +156,10 @@ test("runtime injection includes a full-URL asset base", async () => {
   });
 
   const assetDirectory = path.join(outDir, "assets");
-  const entryName = (await readdir(assetDirectory)).find((name) => name.endsWith(".js"));
-  expect(entryName).toBeDefined();
-  const entryCode = await readFile(path.join(assetDirectory, entryName!), "utf8");
-  expect(entryCode).toContain(`assetBase:${JSON.stringify(base)}`);
+  const bootstrapName = (await readdir(assetDirectory)).find((name) =>
+    name.startsWith("csp-guard-sri-") && name.endsWith(".js"),
+  );
+  expect(bootstrapName).toBeDefined();
+  const bootstrapCode = await readFile(path.join(assetDirectory, bootstrapName!), "utf8");
+  expect(bootstrapCode).toContain(`assetBase:${JSON.stringify(base)}`);
 });

@@ -8,6 +8,7 @@ import vitePluginCSP from "../src/index";
 import { generateHash } from "../src/policy/core";
 import { processHtmlForSri } from "../src/sri/processHtml";
 import { PENDING_POLICY_ATTR } from "../src/transform";
+import { getHtmlModuleRootChunks } from "../src/sri/bootstrap";
 import type { MyPluginOptions } from "../src/types";
 
 async function writeFixture(root: string) {
@@ -110,6 +111,35 @@ function runtimeMapKey(fileName: string): string {
   return `${JSON.stringify(`/${fileName}`)}:`;
 }
 
+function bootstrapAsset(
+  result: FixtureBuild,
+): Rolldown.OutputAsset | undefined {
+  return result.output.find(
+    (item): item is Rolldown.OutputAsset =>
+      item.type === "asset" && /csp-guard-sri-.*\.js$/.test(item.fileName),
+  );
+}
+
+function bootstrapForHtml(
+  result: FixtureBuild,
+  htmlFileName: string,
+): Rolldown.OutputAsset | undefined {
+  const htmlAsset = result.output.find(
+    (item): item is Rolldown.OutputAsset =>
+      item.type === "asset" && item.fileName === htmlFileName,
+  );
+  if (!htmlAsset) return undefined;
+  const src = cheerio
+    .load(String(htmlAsset.source))("script[defer][integrity]")
+    .attr("src");
+  const fileName = src?.split(/[?#]/, 1)[0]?.split("/").pop();
+  if (!fileName) return undefined;
+  return result.output.find(
+    (item): item is Rolldown.OutputAsset =>
+      item.type === "asset" && item.fileName.endsWith(`/${fileName}`),
+  );
+}
+
 function scriptElemHashes(csp: string | undefined): string[] {
   const directive = csp
     ?.split(";")
@@ -119,6 +149,33 @@ function scriptElemHashes(csp: string | undefined): string[] {
     source.slice(1, -1),
   );
 }
+
+describe("HTML module root discovery", () => {
+  const bundle = {
+    "assets/main file.js": { type: "chunk", isEntry: false },
+  } as unknown as Rolldown.OutputBundle;
+
+  test.each([
+    ["/app/", "index.html", "/app/assets/main%20file.js?v=1#module"],
+    ["./", "sub/index.html", "../assets/main%20file.js?v=1#module"],
+    ["", "sub/index.html", "../assets/main%20file.js?v=1#module"],
+    [
+      "https://cdn.example.test/app/",
+      "index.html",
+      "https://cdn.example.test/app/assets/main%20file.js?x",
+    ],
+    [
+      "//cdn.example.test/app/",
+      "index.html",
+      "//cdn.example.test/app/assets/main%20file.js#x",
+    ],
+  ])("resolves module src %s %s", (base, htmlFile, src) => {
+    const html = `<script type="module" src="${src}"></script>`;
+    expect(getHtmlModuleRootChunks(html, htmlFile, bundle, base)).toEqual([
+      "assets/main file.js",
+    ]);
+  });
+});
 
 describe("dynamic import preload lists", () => {
   let root: string;
@@ -153,7 +210,7 @@ describe("dynamic import preload lists", () => {
         ...options,
       });
       // page.js lazy-imports deep.js, so deep's CSS is named only in page's
-      // preload list (the entry also carries the SRI runtime's file map).
+      // preload list.
       const page = result.chunks.find((chunk) => chunk.name === "page")!;
       const deepCss = result.output.find(
         (item) => item.type === "asset" && /deep-.*\.css$/.test(item.fileName),
@@ -168,8 +225,22 @@ describe("dynamic import preload lists", () => {
       for (const hash of result.finalHashes) {
         expect(result.csp).toContain(`'${hash}'`);
       }
+      const bootstrap = bootstrapAsset(result);
+      if (_name === "sri without runtime") {
+        expect(bootstrap).toBeUndefined();
+      } else {
+        expect(bootstrap).toBeDefined();
+      }
+      const bootstrapHash = bootstrap
+        ? `sha256-${generateHash(String(bootstrap.source), "sha256")}`
+        : undefined;
       expect([...new Set(scriptElemHashes(result.csp))].sort()).toEqual(
-        [...new Set(result.finalHashes)].sort(),
+        [
+          ...new Set([
+            ...result.finalHashes,
+            ...(bootstrapHash ? [bootstrapHash] : []),
+          ]),
+        ].sort(),
       );
       const entryHash = `sha256-${generateHash(result.entry.code, "sha256")}`;
       const entryScript = result
@@ -202,7 +273,7 @@ describe("dynamic import preload lists", () => {
   }, 30000);
 });
 
-describe("entry SRI runtime maps", () => {
+describe("HTML SRI runtime bootstrap maps", () => {
   let root: string;
 
   beforeAll(async () => {
@@ -214,17 +285,55 @@ describe("entry SRI runtime maps", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  test("reachable maps use final integrities and exclude the entry", async () => {
+  test("emits one integrity-protected bootstrap before the module script and hashes it in CSP", async () => {
     const result = await buildFixture(root, {
       algorithm: "sha256",
       build: { sri: true },
     });
-    expect(result.entry.code).not.toContain(
-      runtimeMapKey(result.entry.fileName),
-    );
+    const bootstrap = bootstrapAsset(result);
+    expect(bootstrap).toBeDefined();
+    const bootstrapHash = `sha256-${generateHash(String(bootstrap!.source), "sha256")}`;
+    const bootstrapScript = result.$("script[defer]").first();
+    const moduleScript = result.$("script[type='module']").first();
+
+    expect(
+      result.output.filter(
+        (item) =>
+          item.type === "asset" && item.fileName.includes("csp-guard-sri-"),
+      ),
+    ).toHaveLength(1);
+    expect(bootstrapScript.attr("src")).toContain(bootstrap!.fileName);
+    expect(bootstrapScript.attr("integrity")).toBe(bootstrapHash);
+    expect(bootstrapScript.attr("crossorigin")).toBe("anonymous");
+    expect(bootstrapScript.index()).toBeLessThan(moduleScript.index());
+    expect(scriptElemHashes(result.csp)).toContain(bootstrapHash);
+  }, 30000);
+
+  test("does not add the bootstrap hash when script-src-elem relies on unsafe-inline", async () => {
+    const result = await buildFixture(root, {
+      policy: { "script-src-elem": ["'unsafe-inline'"] },
+      build: { sri: true },
+    });
+    const bootstrap = bootstrapAsset(result);
+    expect(bootstrap).toBeDefined();
+    const bootstrapHash = `sha256-${generateHash(String(bootstrap!.source), "sha256")}`;
+    expect(result.csp).toContain("'unsafe-inline'");
+    expect(result.csp).not.toContain(`'${bootstrapHash}'`);
+  }, 30000);
+
+  test("bootstrap maps use final integrities and exclude the root entry", async () => {
+    const result = await buildFixture(root, {
+      algorithm: "sha256",
+      build: { sri: true },
+    });
+    const bootstrap = bootstrapAsset(result);
+    expect(bootstrap).toBeDefined();
+    const bootstrapCode = String(bootstrap!.source);
+    expect(result.entry.code).not.toContain("vite-plugin-csp-guard.sri");
+    expect(bootstrapCode).not.toContain(runtimeMapKey(result.entry.fileName));
 
     for (const chunk of result.chunks.filter((item) => !item.isEntry)) {
-      expect(result.entry.code).toContain(
+      expect(bootstrapCode).toContain(
         runtimeMapPair(
           chunk.fileName,
           `sha256-${generateHash(chunk.code, "sha256")}`,
@@ -237,7 +346,7 @@ describe("entry SRI runtime maps", () => {
     );
     expect(cssFiles.length).toBeGreaterThan(0);
     for (const css of cssFiles) {
-      expect(result.entry.code).toContain(
+      expect(bootstrapCode).toContain(
         runtimeMapPair(
           css.fileName,
           `sha256-${generateHash(String(css.source), "sha256")}`,
@@ -284,13 +393,17 @@ describe("entry SRI runtime maps", () => {
             item.type === "asset" && item.fileName.endsWith(".css"),
         );
         expect(css).toBeDefined();
-        expect(result.entry.code).toContain(
+        const bootstrap = bootstrapAsset(result);
+        expect(bootstrap).toBeDefined();
+        const bootstrapCode = String(bootstrap!.source);
+        expect(bootstrapCode).toContain(
           runtimeMapPair(
             css!.fileName,
             `sha256-${generateHash(String(css!.source), "sha256")}`,
           ),
         );
-        expect(result.entry.code).not.toContain(
+        expect(result.entry.code).not.toContain("vite-plugin-csp-guard.sri");
+        expect(bootstrapCode).not.toContain(
           runtimeMapKey(result.entry.fileName),
         );
       } finally {
@@ -334,16 +447,23 @@ describe("multi-page entry SRI runtime maps", () => {
       algorithm: "sha256",
       build: { sri: true },
     };
-    const entries = () =>
-      buildFixture(root, options, { input }).then(({ chunks }) => chunks);
+    const entries = () => buildFixture(root, options, { input });
 
     await writeFile(join(root, "b-lazy.js"), "export default 'b1'\n");
     const first = await entries();
-    const firstA = first.find((chunk) => chunk.isEntry && chunk.name === "a")!;
-    const firstB = first.find((chunk) => chunk.isEntry && chunk.name === "b")!;
-    const bLazy = first.find((chunk) => chunk.name === "b-lazy")!;
-    expect(firstA.code).not.toContain(runtimeMapKey(bLazy.fileName));
-    expect(firstB.code).toContain(
+    const firstA = first.chunks.find(
+      (chunk) => chunk.isEntry && chunk.name === "a",
+    )!;
+    const firstB = first.chunks.find(
+      (chunk) => chunk.isEntry && chunk.name === "b",
+    )!;
+    const bLazy = first.chunks.find((chunk) => chunk.name === "b-lazy")!;
+    const firstABootstrap = bootstrapForHtml(first, "a.html")!;
+    const firstBBootstrap = bootstrapForHtml(first, "b.html")!;
+    expect(String(firstABootstrap.source)).not.toContain(
+      runtimeMapKey(bLazy.fileName),
+    );
+    expect(String(firstBBootstrap.source)).toContain(
       runtimeMapPair(
         bLazy.fileName,
         `sha256-${generateHash(bLazy.code, "sha256")}`,
@@ -352,16 +472,139 @@ describe("multi-page entry SRI runtime maps", () => {
 
     await writeFile(join(root, "b-lazy.js"), "export default 'b2'\n");
     const second = await entries();
-    const secondA = second.find(
+    const secondA = second.chunks.find(
       (chunk) => chunk.isEntry && chunk.name === "a",
     )!;
-    const secondB = second.find(
+    const secondB = second.chunks.find(
       (chunk) => chunk.isEntry && chunk.name === "b",
     )!;
+    const secondABootstrap = bootstrapForHtml(second, "a.html")!;
+    const secondBBootstrap = bootstrapForHtml(second, "b.html")!;
 
     expect(secondA.fileName).toBe(firstA.fileName);
     expect(secondA.code).toBe(firstA.code);
     expect(secondB.fileName).not.toBe(firstB.fileName);
+    expect(secondABootstrap.fileName).toBe(firstABootstrap.fileName);
+    expect(secondBBootstrap.fileName).not.toBe(firstBBootstrap.fileName);
+  }, 30000);
+
+  test("MPA pages map a shared non-entry chunk and its lazy dependencies", async () => {
+    const sharedRoot = await realpath(
+      await mkdtemp(join(tmpdir(), "csp-guard-shared-mpa-")),
+    );
+    try {
+      for (const page of ["one", "two"]) {
+        await writeFile(
+          join(sharedRoot, `${page}.html`),
+          "<!doctype html><html><head></head><body>" +
+            `<script type="module" src="./${page}.js"></script></body></html>`,
+        );
+        await writeFile(
+          join(sharedRoot, `${page}.js`),
+          "import { loadShared } from './shared.js'; window.loadShared = loadShared;\n",
+        );
+      }
+      await writeFile(
+        join(sharedRoot, "shared.js"),
+        "export const loadShared = () => import('./shared-lazy.js');\n",
+      );
+      await writeFile(
+        join(sharedRoot, "shared-lazy.js"),
+        "import './shared-lazy.css'; export const lazy = true;\n",
+      );
+      await writeFile(
+        join(sharedRoot, "shared-lazy.css"),
+        ".lazy { color: red; }\n",
+      );
+
+      const built = await build({
+        configFile: false,
+        root: sharedRoot,
+        logLevel: "silent",
+        plugins: [vitePluginCSP({ algorithm: "sha256", build: { sri: true } })],
+        build: {
+          write: false,
+          minify: false,
+          rolldownOptions: {
+            input: {
+              one: join(sharedRoot, "one.html"),
+              two: join(sharedRoot, "two.html"),
+            },
+          },
+        },
+      });
+      const buildOutput = (
+        Array.isArray(built) ? built[0] : built
+      ) as Rolldown.RolldownOutput;
+      const output = buildOutput.output;
+      const chunks = output.filter(
+        (item): item is Rolldown.OutputChunk => item.type === "chunk",
+      );
+      const sharedChunk = chunks.find(
+        (chunk) =>
+          !chunk.isEntry &&
+          Object.keys(chunk.modules).some((id) => id.endsWith("/shared.js")),
+      );
+      const lazyChunk = chunks.find((chunk) =>
+        Object.keys(chunk.modules).some((id) => id.endsWith("/shared-lazy.js")),
+      );
+      const lazyCss = output.find(
+        (item): item is Rolldown.OutputAsset =>
+          item.type === "asset" && item.fileName.endsWith(".css"),
+      );
+      expect(sharedChunk).toBeDefined();
+      expect(sharedChunk!.isEntry).toBe(false);
+      expect(lazyChunk).toBeDefined();
+      expect(lazyCss).toBeDefined();
+
+      const htmlPages = output.filter(
+        (item): item is Rolldown.OutputAsset =>
+          item.type === "asset" && item.fileName.endsWith(".html"),
+      );
+      expect(htmlPages).toHaveLength(2);
+      const bootstrapNames: string[] = [];
+      for (const page of htmlPages) {
+        const $ = cheerio.load(String(page.source));
+        const bootstrapSrc = $("script[defer][integrity]").attr("src");
+        expect(bootstrapSrc).toBeTruthy();
+        const bootstrap = output.find(
+          (item): item is Rolldown.OutputAsset =>
+            item.type === "asset" &&
+            item.fileName.endsWith(bootstrapSrc!.split("/").pop()!),
+        );
+        expect(bootstrap).toBeDefined();
+        bootstrapNames.push(bootstrap!.fileName);
+        const code = String(bootstrap!.source);
+        expect(code).toContain(
+          runtimeMapPair(
+            sharedChunk!.fileName,
+            `sha256-${generateHash(sharedChunk!.code, "sha256")}`,
+          ),
+        );
+        expect(code).toContain(
+          runtimeMapPair(
+            lazyChunk!.fileName,
+            `sha256-${generateHash(lazyChunk!.code, "sha256")}`,
+          ),
+        );
+        expect(code).toContain(
+          runtimeMapPair(
+            lazyCss!.fileName,
+            `sha256-${generateHash(String(lazyCss!.source), "sha256")}`,
+          ),
+        );
+      }
+      expect(new Set(bootstrapNames).size).toBe(1);
+      expect(
+        output.filter(
+          (item) =>
+            item.type === "asset" &&
+            /csp-guard-sri-.*\.js$/.test(item.fileName),
+        ),
+      ).toHaveLength(1);
+    } finally {
+      await rm(sharedRoot, { recursive: true, force: true });
+    }
   }, 30000);
 });
 
@@ -512,11 +755,17 @@ describe("transformPolicy with SRI", () => {
       for (const hash of result.finalHashes) {
         expect(received[0]).toContain(`'${hash}'`);
       }
+      const bootstrap = bootstrapAsset(result);
+      const bootstrapHash = bootstrap
+        ? `sha256-${generateHash(String(bootstrap.source), "sha256")}`
+        : undefined;
       expect(
         scriptElemHashes(received[0]).filter(
-          (hash) => !result.finalHashes.includes(hash),
+          (hash) =>
+            !result.finalHashes.includes(hash) && hash !== bootstrapHash,
         ),
       ).toEqual([]);
+      if (bootstrapHash) expect(received[0]).toContain(`'${bootstrapHash}'`);
       expect(
         result.$('meta[http-equiv="Content-Security-Policy"]').length,
       ).toBe(0);

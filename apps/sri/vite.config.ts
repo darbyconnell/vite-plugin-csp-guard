@@ -30,6 +30,16 @@ export default defineConfig({
   preview: {
     port: 4011,
   },
+  build: {
+    rolldownOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.endsWith("/src/earlyStylesheet.ts")) return "early-stylesheet";
+          return null;
+        },
+      },
+    },
+  },
   server: {
     port: 3011,
   },
