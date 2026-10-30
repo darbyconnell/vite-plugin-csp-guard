@@ -54,6 +54,9 @@ export const generatePolicyString = ({
 
     if (policyHasUnsafeInline([...currentPolicy, ...inheritedSources])) {
       // Preserve unsafe-inline when the list has no hash, nonce, or strict-dynamic.
+      if (inheritedSources.length > 0) {
+        finalPolicy[policyKey] = [...currentPolicy, ...inheritedSources];
+      }
       continue;
     }
 
