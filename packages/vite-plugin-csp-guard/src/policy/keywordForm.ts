@@ -11,10 +11,28 @@ export function cspKeywordForm(token: string): string {
 
 export const cspSkipElemInherit = new Set([cspKeywordForm(unsafeEval)]);
 
+function normalizeSource(source: string): string {
+  return source.trim().replace(/^['"]|['"]$/g, "").toLowerCase();
+}
+
+function hasHashNonceOrStrictDynamic(list: string[]): boolean {
+  return list.some((source) => {
+    const normalized = normalizeSource(source);
+    return (
+      /^(sha256|sha384|sha512)-/.test(normalized) ||
+      normalized.startsWith("nonce-") ||
+      normalized === "strict-dynamic"
+    );
+  });
+}
+
 export function policyHasUnsafeInline(
   list: string[] | undefined,
 ): boolean {
-  return list?.includes(cspKeywordForm(unsafeInline)) ?? false;
+  return (
+    list?.some((source) => normalizeSource(source) === unsafeInline) === true &&
+    !hasHashNonceOrStrictDynamic(list ?? [])
+  );
 }
 
 export function policyHasUnsafeEval(

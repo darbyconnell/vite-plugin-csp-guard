@@ -239,6 +239,7 @@ export const transformIndexHtmlHandler = ({
   const rawPolicy = generatePolicyString({
     collection: updatedCollection,
     policy: policy,
+    userPolicy: cspContext.options.policy,
   });
 
   let effectivePolicyString: string | null = rawPolicy;

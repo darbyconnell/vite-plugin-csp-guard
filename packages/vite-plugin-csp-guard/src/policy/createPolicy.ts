@@ -11,37 +11,57 @@ const ELEM_PARENT_MAP = {
 type GeneratePolicyProps = {
   policy: CSPPolicy | DefinedPolicy;
   collection: HashCollection;
+  userPolicy?: CSPPolicy | DefinedPolicy;
 };
 export const generatePolicyString = ({
   collection,
   policy,
+  userPolicy,
 }: GeneratePolicyProps) => {
   const finalPolicy = { ...policy };
+  const userPolicyDirectives = new Set(
+    Object.keys(userPolicy ?? {}).map((key) =>
+      key.replace(/[A-Z]/g, (letter) => `-${letter.toLowerCase()}`).toLowerCase(),
+    ),
+  );
 
   // Generate the final policy
   for (const [key, value] of Object.entries(collection)) {
     const currentMap = value;
-    const currentPolicy = finalPolicy[key as keyof CSPPolicy] ?? [];
+    if (currentMap.size === 0) continue;
 
-    if (policyHasUnsafeInline(currentPolicy)) {
-      // If we have unsafe-inline, we should not add any hashes because this will override the unsafe-inline
+    const policyKey = key as keyof CSPPolicy;
+    const currentPolicy = finalPolicy[policyKey] ?? [];
+    const parentKey = ELEM_PARENT_MAP[key as keyof typeof ELEM_PARENT_MAP];
+    const elementPolicyIsDefined = finalPolicy[policyKey] !== undefined;
+    const elementDirectiveIsExplicit = userPolicyDirectives.has(key);
+    let inheritedSources: string[] = [];
+
+    if (parentKey && !elementDirectiveIsExplicit) {
+      const parentSources = finalPolicy[parentKey];
+      const sourcesToInherit = elementPolicyIsDefined
+        ? (parentSources ?? [])
+        : (parentSources ?? finalPolicy["default-src"] ?? []);
+      inheritedSources = sourcesToInherit.filter(
+        (source) =>
+          !cspSkipElemInherit.has(source) && !currentPolicy.includes(source),
+      );
+    } else if (parentKey && !elementPolicyIsDefined) {
+      // Explicitly configured missing directives start empty; they do not
+      // inherit a parent or default-src fallback.
+      inheritedSources = [];
+    }
+
+    if (policyHasUnsafeInline([...currentPolicy, ...inheritedSources])) {
+      // Preserve unsafe-inline when the list has no hash, nonce, or strict-dynamic.
       continue;
     }
 
-    if (currentMap.size > 0) {
-      const parentKey =
-        ELEM_PARENT_MAP[key as keyof typeof ELEM_PARENT_MAP];
-      const parentSources = parentKey ? (finalPolicy[parentKey] ?? []) : [];
-      const inheritedSources = parentSources.filter(
-        (s) => !cspSkipElemInherit.has(s) && !currentPolicy.includes(s),
-      );
-
-      finalPolicy[key as keyof CSPPolicy] = [
-        ...currentPolicy,
-        ...inheritedSources,
-        ...Array.from(currentMap.keys()),
-      ];
-    }
+    finalPolicy[policyKey] = [
+      ...currentPolicy,
+      ...inheritedSources,
+      ...Array.from(currentMap.keys()),
+    ];
   }
   // Create the policy string
   const policyString = policyToString(finalPolicy);
