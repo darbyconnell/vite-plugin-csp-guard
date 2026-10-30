@@ -1,5 +1,6 @@
-import { test, expect } from "@playwright/test";
+import { test, expect, type Page } from "@playwright/test";
 import { createHash } from "node:crypto";
+import { createServer, type Server } from "node:http";
 import { sriTest } from "@repo/testing";
 import { installSriRuntime } from "../../../../packages/vite-plugin-csp-guard/src/sri/runtime";
 
@@ -733,5 +734,236 @@ test.describe("SRI integrity", () => {
 
     expect(result.outcome).toBe("load");
     expect(result.integrity).toBe(second.integrity);
+  });
+});
+
+test.describe("Runtime-owned crossorigin", () => {
+  let server: Server;
+  let remoteUrl: string;
+
+  test.beforeAll(async () => {
+    server = createServer((_request, response) => {
+      response.writeHead(200, { "Content-Type": "text/css" });
+      response.end("body { --sri-crossorigin-regression: loaded; }");
+    });
+
+    const port = await new Promise<number>((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        if (!address || typeof address === "string") {
+          reject(new Error("Could not get the cross-origin test server port"));
+          return;
+        }
+        resolve(address.port);
+      });
+    });
+    remoteUrl = `http://127.0.0.1:${port}/remote.css`;
+  });
+
+  test.afterAll(async () => {
+    if (server?.listening) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => (error ? reject(error) : resolve()));
+      });
+    }
+  });
+
+  const allowCrossOriginStylesInCsp = async (page: Page) => {
+    await page.route("**/*", async (route) => {
+      const request = route.request();
+      if (request.resourceType() !== "document" || !request.isNavigationRequest()) {
+        await route.continue();
+        return;
+      }
+
+      const response = await route.fetch();
+      const html = await response.text();
+      let foundCsp = false;
+      const rewrittenHtml = html.replace(
+        /<meta\b(?=[^>]*\bhttp-equiv=["']Content-Security-Policy["'])[^>]*>/gi,
+        (meta) =>
+          meta.replace(
+            /(\bcontent=)(["'])([\s\S]*?)\2/i,
+            (_attribute, name: string, quote: string, policy: string) => {
+              foundCsp = true;
+              const directives = policy
+                .split(";")
+                .map((directive) => directive.trim())
+                .filter(Boolean);
+              const styleSrcElemIndex = directives.findIndex((directive) =>
+                /^style-src-elem(?:\s|$)/i.test(directive)
+              );
+              const origin = new URL(remoteUrl).origin;
+
+              if (styleSrcElemIndex >= 0) {
+                if (!directives[styleSrcElemIndex].split(/\s+/).includes(origin)) {
+                  directives[styleSrcElemIndex] += ` ${origin}`;
+                }
+              } else {
+                const styleSrc = directives.find((directive) =>
+                  /^style-src(?:\s|$)/i.test(directive)
+                );
+                const inheritedSources = styleSrc ? styleSrc.split(/\s+/).slice(1) : [];
+                if (!inheritedSources.includes(origin)) inheritedSources.push(origin);
+                directives.push(`style-src-elem ${inheritedSources.join(" ")}`);
+              }
+
+              return `${name}${quote}${directives.join("; ")}${quote}`;
+            }
+          )
+      );
+      if (!foundCsp) throw new Error("Expected the SRI preview document to contain a CSP meta tag");
+
+      const headers = { ...response.headers() };
+      delete headers["content-length"];
+      delete headers["content-encoding"];
+      delete headers["transfer-encoding"];
+      await route.fulfill({
+        status: response.status(),
+        headers,
+        body: rewrittenHtml,
+      });
+    });
+  };
+
+  const getManagedStylesheetHref = async (page: Page) => {
+    const href = await page
+      .locator('link[rel="stylesheet"][href*="/assets/"][href$=".css"]')
+      .first()
+      .getAttribute("href");
+    expect(href).not.toBeNull();
+    return new URL(href!, page.url()).href;
+  };
+
+  test("clears owned crossorigin on URL changes", async ({ page }) => {
+    await allowCrossOriginStylesInCsp(page);
+    await page.goto("/");
+    const stylesheet = await getManagedStylesheetHref(page);
+
+    for (const mutation of ["property", "setAttribute"] as const) {
+      const result = await page.evaluate(async ({ stylesheet, remoteUrl, mutation }) => {
+        const link = document.createElement("link");
+        link.rel = "stylesheet";
+        link.href = stylesheet;
+        const waitForLoad = () =>
+          new Promise<"load" | "error" | "timeout">((resolve) => {
+            link.onload = () => resolve("load");
+            link.onerror = () => resolve("error");
+            window.setTimeout(() => resolve("timeout"), 5000);
+          });
+
+        const firstLoad = waitForLoad();
+        document.head.appendChild(link);
+        const firstOutcome = await firstLoad;
+        const initiallyManaged = {
+          integrity: link.getAttribute("integrity"),
+          crossorigin: link.getAttribute("crossorigin"),
+        };
+
+        const remoteLoad = waitForLoad();
+        if (mutation === "property") link.href = remoteUrl;
+        else link.setAttribute("href", remoteUrl);
+        const remoteOutcome = await remoteLoad;
+        return {
+          firstOutcome,
+          initiallyManaged,
+          remoteOutcome,
+          integrity: link.getAttribute("integrity"),
+          crossorigin: link.getAttribute("crossorigin"),
+        };
+      }, { stylesheet, remoteUrl, mutation });
+
+      expect(result.firstOutcome).toBe("load");
+      expect(result.initiallyManaged.integrity).toMatch(/^sha256-/);
+      expect(result.initiallyManaged.crossorigin).toBe("anonymous");
+      expect(result.remoteOutcome).toBe("load");
+      expect(result.integrity).toBeNull();
+      expect(result.crossorigin).toBeNull();
+    }
+  });
+
+  test("preserves author crossorigin on an unmapped URL", async ({ page }) => {
+    await allowCrossOriginStylesInCsp(page);
+    await page.goto("/");
+    const stylesheet = await getManagedStylesheetHref(page);
+
+    const result = await page.evaluate(async ({ stylesheet, remoteUrl }) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.setAttribute("crossorigin", "use-credentials");
+      link.href = stylesheet;
+      const waitForLoad = () =>
+        new Promise<"load" | "error" | "timeout">((resolve) => {
+          link.onload = () => resolve("load");
+          link.onerror = () => resolve("error");
+          window.setTimeout(() => resolve("timeout"), 5000);
+        });
+
+      const firstLoad = waitForLoad();
+      document.head.appendChild(link);
+      const firstOutcome = await firstLoad;
+      const remoteLoad = waitForLoad();
+      link.href = remoteUrl;
+      const remoteOutcome = await remoteLoad;
+      return {
+        firstOutcome,
+        remoteOutcome,
+        integrity: link.getAttribute("integrity"),
+        crossorigin: link.getAttribute("crossorigin"),
+      };
+    }, { stylesheet, remoteUrl });
+
+    expect(result.firstOutcome).toBe("load");
+    expect(result.remoteOutcome).toBe("error");
+    expect(result.integrity).toBeNull();
+    expect(result.crossorigin).toBe("use-credentials");
+  });
+
+  test("reapplies SRI state when switching back in-map", async ({ page }) => {
+    await allowCrossOriginStylesInCsp(page);
+    await page.goto("/");
+    const stylesheet = await getManagedStylesheetHref(page);
+
+    const result = await page.evaluate(async ({ stylesheet, remoteUrl }) => {
+      const link = document.createElement("link");
+      link.rel = "stylesheet";
+      link.href = stylesheet;
+      const waitForLoad = () =>
+        new Promise<"load" | "error" | "timeout">((resolve) => {
+          link.onload = () => resolve("load");
+          link.onerror = () => resolve("error");
+          window.setTimeout(() => resolve("timeout"), 5000);
+        });
+
+      const firstLoad = waitForLoad();
+      document.head.appendChild(link);
+      const firstOutcome = await firstLoad;
+      const remoteLoad = waitForLoad();
+      link.href = remoteUrl;
+      const remoteOutcome = await remoteLoad;
+      const remoteAttributes = {
+        integrity: link.getAttribute("integrity"),
+        crossorigin: link.getAttribute("crossorigin"),
+      };
+      const returnLoad = waitForLoad();
+      link.href = stylesheet;
+      const returnOutcome = await returnLoad;
+      return {
+        firstOutcome,
+        remoteOutcome,
+        remoteAttributes,
+        returnOutcome,
+        integrity: link.getAttribute("integrity"),
+        crossorigin: link.getAttribute("crossorigin"),
+      };
+    }, { stylesheet, remoteUrl });
+
+    expect(result.firstOutcome).toBe("load");
+    expect(result.remoteOutcome).toBe("load");
+    expect(result.remoteAttributes).toEqual({ integrity: null, crossorigin: null });
+    expect(result.returnOutcome).toBe("load");
+    expect(result.integrity).toMatch(/^sha256-/);
+    expect(result.crossorigin).toBe("anonymous");
   });
 });
